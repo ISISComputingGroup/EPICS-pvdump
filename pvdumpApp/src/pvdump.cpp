@@ -1,3 +1,9 @@
+///
+/// @file pvdump.cpp
+/// @author Freddie Akeroyd, STFC ISIS Facility
+///
+/// Dump all PV's in the IOC to a sqlite database file
+///
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -27,8 +33,9 @@
 #include <epicsTimer.h>
 #include <epicsMutex.h>
 #include <iocsh.h>
+#include "macLib.h"
 
-#include "pvdump.h"
+#include "utilities.h"
 
 #include "sqlite3.h"
 #include "SqlDatabase.h"
@@ -38,38 +45,59 @@
 #ifdef _WIN32
 #include <process.h>
 #include <windows.h>
+#else
+#include <unistd.h>
 #endif
 
 #include <epicsExport.h>
 
+#include "pvdump.h"
+
 static int get_pid()
 {
-    #ifdef _WIN32
-        return _getpid();
-    #endif
-    return 0;
+#ifdef _WIN32
+    return _getpid();
+#else
+    return getpid();
+#endif
 }
 
 static std::string get_path()
 {
-    #ifdef _WIN32
-        char buffer[MAX_PATH];
-        GetModuleFileName(NULL,buffer,sizeof(buffer));
-        std::string path(buffer);
-    #else
-         std::string path("");
-    #endif
-
-    return path;
+#ifdef _WIN32
+    char buffer[MAX_PATH];
+	buffer[0] = '\0';
+    GetModuleFileName(NULL,buffer,sizeof(buffer));
+#else
+    char buffer[256];
+    int n = readlink("/proc/self/exe", buffer, sizeof(buffer)-1);
+	if (n >= 0)
+	{
+	   buffer[n] = '\0';
+	}
+	else
+	{
+	    strcpy(buffer,"<unknown>");
+	}
+#endif
+    return std::string(buffer);
 }
+
+struct PVInfo
+{
+    std::string record_type;
+    std::map<std::string,std::string> info_fields;
+	PVInfo(const std::string& rt, const std::map<std::string,std::string>& inf) : record_type(rt), info_fields(inf) { }
+	PVInfo() { }
+};
 
 // based on iocsh dbl command from epics_base/src/db/dbTest.c 
 // return an std map, currently key is pv and value is recordType (if that is defined)
-static void dump_pvs(const char *precordTypename, const char *fields, std::map<std::string,std::string>& pvs)
+static void dump_pvs(const char *precordTypename, const char *fields, std::map<std::string,PVInfo>& pvs)
 {
     DBENTRY dbentry;
     DBENTRY *pdbentry=&dbentry;
-    long status;
+    long status, status2;
     int nfields = 0;
     int ifield;
     char *fieldnames = 0;
@@ -112,6 +140,7 @@ static void dump_pvs(const char *precordTypename, const char *fields, std::map<s
     if (status) {
         printf("No record type\n");
     }
+	std::map<std::string,std::string> info_fields;
     while (!status) {
         status = dbFirstRecord(pdbentry);
         while (!status) {
@@ -128,7 +157,24 @@ static void dump_pvs(const char *precordTypename, const char *fields, std::map<s
                     pvalue = dbGetString(pdbentry);
                 }
             }
-			pvs[dbGetRecordName(pdbentry)] = (pvalue ? pvalue : "");
+			// info fields
+			info_fields.clear();
+			status2 = dbFirstInfo(pdbentry);
+			while(!status2)
+			{
+			    const char* info_name = dbGetInfoName(pdbentry);
+				if (info_name != NULL)
+				{
+					const char* info_value = dbGetInfoString(pdbentry);
+					info_fields[info_name] = (info_value != NULL ? info_value : "<error>");
+				}
+				else
+				{
+					printf("dbFirst/NextInfo() OK, but dbGetInfoName() returns NULL\n");
+				}
+			    status2 = dbNextInfo(pdbentry);
+			}
+			pvs[dbGetRecordName(pdbentry)] = PVInfo((pvalue ? pvalue : ""), info_fields);
             status = dbNextRecord(pdbentry);
         }
         if (precordTypename) break;
@@ -141,6 +187,18 @@ static void dump_pvs(const char *precordTypename, const char *fields, std::map<s
     dbFinishEntry(pdbentry);
 }
 
+static int execute_sql(sqlite3* db, const char* sql)
+{
+    char* errmsg = NULL;
+    int ret = sqlite3_exec(db, sql, NULL, NULL, &errmsg);
+	if (errmsg != NULL)
+	{
+		printf("pvdump: sqlite3: %s\n", errmsg);
+	    sqlite3_free(errmsg);
+	}
+	return ret;
+}
+
 extern "C" {
 
 int pvdump(const char *dbName, const char *iocName)
@@ -149,113 +207,114 @@ int pvdump(const char *dbName, const char *iocName)
     std::string exepath = get_path();
         
     time_t currtime;
-    time(&currtime);    
-    
-
-    sql::Field definition_tbPV[] = 
-    {
-        sql::Field(sql::FIELD_KEY),
-        sql::Field("pvname", sql::type_text, sql::flag_not_null),
-        sql::Field("record_type", sql::type_text),
-        sql::Field("pid", sql::type_int),
-        sql::Field("ioc", sql::type_text),
-        sql::Field("start_time", sql::type_time),
-        sql::Field("exe_path", sql::type_text),
-        sql::Field(sql::DEFINITION_END),
-    }; 
-    
-    sql::Field definition_tbIOC[] = 
-    {
-        sql::Field(sql::FIELD_KEY),
-        sql::Field("ioc", sql::type_text, sql::flag_not_null),
-        sql::Field("pid", sql::type_int),
-        sql::Field("start_time", sql::type_time),
-        sql::Field("exe_path", sql::type_text),
-        sql::Field("running", sql::type_int),
-        sql::Field(sql::DEFINITION_END),
-    };    
-    
-    if (NULL == dbName)
+    time(&currtime);
+	std::string ioc_name, db_name;    
+	if (NULL != iocName)
 	{
-		dbName = "test.db";  // default database name
+	    ioc_name = iocName;
 	}
+	else
+	{
+	    ioc_name = getIOCName();
+	}
+	printf("pvdump: ioc name is \"%s\"\n", ioc_name.c_str());
+    const char* epicsRoot = macEnvExpand("$(EPICS_ROOT)");
+	if (NULL == epicsRoot)
+	{
+		printf("pvdump: ERROR: EPICS_ROOT is NULL - cannot continue\n");
+	    return -1;
+	}
+    if (NULL != dbName)
+	{
+	    db_name = dbName;
+	}
+	else
+	{
+		db_name = std::string(epicsRoot) + "/iocs.sq3";  // default database name
+	}
+	printf("pvdump: db name is \"%s\"\n", db_name.c_str()); 
     
     //PV stuff
-	std::map<std::string,std::string> pv_map;
+	std::map<std::string,PVInfo> pv_map;
 	try
 	{
 		dump_pvs(NULL, NULL, pv_map);
 	}
 	catch(const std::exception& ex)
 	{
-		printf("%s\n", ex.what());
+		printf("pvdump: ERROR: %s\n", ex.what());
+		return -1;
 	}
     
     sql::Database db;      
     
-    try
+    try 
     {
-        db.open(dbName, 20000);
+        db.open(db_name, 20000);
+		execute_sql(db.getHandle(), "PRAGMA foreign_keys = ON");
+		// createFromDefinition counts commas so do not include constraints (i.e. foreign keys) in definitions. Also omit any other stuff like "primary key" or "unique"
+		// as it can confus it.
+		sql::Table* table_iocs = sql::Table::createFromDefinition(db.getHandle(), "iocs",
+		    "iocname TEXT, dir TEXT, consoleport INT, logport INT, exe TEXT, cmd TEXT");
+		sql::Table* table_pvs = sql::Table::createFromDefinition(db.getHandle(), "pvs", "pvname TEXT, record_type TEXT, iocname TEXT"); 
+		sql::Table* table_pvinfo = sql::Table::createFromDefinition(db.getHandle(), "pvinfo", "pvname TEXT, infoname TEXT, value TEXT");
+		sql::Table* table_iocrt = sql::Table::createFromDefinition(db.getHandle(), "iocrt", 
+		    "iocname TEXT, pid INTEGER, start_time INTEGER, exe_path TEXT");
 
-        sql::Table tbPV(db.getHandle(), "PVs", definition_tbPV);
-        if (!tbPV.exists())
-        {
-            tbPV.create();
-        }
-        else
-        {
-            //Remove any previous entries for this IOC
-            std::ostringstream s;
-            s << "ioc = " << "'" << iocName << "'";
-            tbPV.deleteRecords(s.str());
-        }
-        
-        sql::Record record(tbPV.fields());
-
-        const clock_t begin_time = clock();
         db.transactionBegin();
-        for(std::map<std::string,std::string>::const_iterator it = pv_map.begin(); it != pv_map.end(); ++it)
+		table_iocrt->deleteRecords(std::string("iocname='")+ioc_name+"'"); // delete our old entry from iocrt
+		std::ostringstream oss;
+		oss << "pid=" << pid;
+		table_iocrt->deleteRecords(oss.str()); // remove any old record from iocrt with our current pid
+		table_pvs->deleteRecords(std::string("iocname='")+ioc_name+"'"); // remove our PVS from last time, this will also delete records from pvinfo due to foreign key cascade action
+        db.transactionCommit();
+		
+		sql::Record pvs_record(table_pvs->fields());
+		sql::Record iocrt_record(table_iocrt->fields());
+		sql::Record pvinfo_record(table_pvinfo->fields());
+		
+        iocrt_record.setString("iocname", ioc_name);
+        iocrt_record.setInteger("pid", pid);
+        iocrt_record.setTime("start_time", currtime);
+        iocrt_record.setString("exe_path", exepath);
+        
+        const clock_t begin_time = clock();
+
+        db.transactionBegin();
+		table_iocrt->addRecord(&iocrt_record);
+        for(std::map<std::string,PVInfo>::const_iterator it = pv_map.begin(); it != pv_map.end(); ++it)
         {
-            record.setString("pvname", it->first);
-            record.setString("record_type", it->second);
-            record.setInteger("pid", pid);
-            record.setString("ioc", iocName);
-            record.setTime("start_time", currtime);
-            record.setString("exe_path", exepath);
-            tbPV.addRecord(&record);
+            pvs_record.setString("pvname", it->first);
+            pvs_record.setString("record_type", it->second.record_type);
+            pvs_record.setString("iocname", ioc_name);
+            table_pvs->addRecord(&pvs_record);
+			const std::map<std::string,std::string>& imap = it->second.info_fields;
+            for(std::map<std::string,std::string>::const_iterator itinf = imap.begin(); itinf != imap.end(); ++itinf)
+			{
+			    pvinfo_record.setString("pvname", it->first);
+			    pvinfo_record.setString("infoname", itinf->first);
+			    pvinfo_record.setString("value", itinf->second);
+                table_pvinfo->addRecord(&pvinfo_record);
+			}
         }
         db.transactionCommit();
-        std::cout << "PV write took: " << float( clock () - begin_time ) /  CLOCKS_PER_SEC << std::endl;
-
-        //IOC Stuff       
-        sql::Table tbIOC(db.getHandle(), "IOCs", definition_tbIOC);
-        
-        if (!tbIOC.exists())
-        {
-            tbIOC.create();
-        }
-        else
-        {
-            //Remove any previous entries for this IOC
-            std::ostringstream s;
-            s << "ioc = " << "'" << iocName << "'";
-            tbIOC.deleteRecords(s.str());
-        }
-               
-        sql::Record ioc_record(tbIOC.fields());
-        ioc_record.setString("ioc", iocName);
-        ioc_record.setInteger("pid", pid);
-        ioc_record.setTime("start_time", currtime);
-        ioc_record.setString("exe_path", exepath);
-        ioc_record.setInteger("running", 1);    
-        tbIOC.addRecord(&ioc_record);
+        std::cout << "pvdump: write took: " << float( clock () - begin_time ) /  CLOCKS_PER_SEC << std::endl;
     }
+	catch(const std::exception& ex)
+	{
+		printf("pvdump: ERROR: %s\n", ex.what());
+        return -1;
+	}
+	catch(const sql::Exception& ex) // sql::Exception does not inherit from std::exception, so need to catch separately 
+	{
+		printf("pvdump: sql ERROR: %s\n", ex.msg().c_str());
+        return -1;
+	}
     catch(...)
     {
-        printf("FAILED TRYING TO WRITE TO THE ISIS PV DB\n");
+        printf("pvdump: ERROR: FAILED TRYING TO WRITE TO THE ISIS PV DB\n");
         return -1;
-    }    
-    
+    }        
     return 0;
 }
 
