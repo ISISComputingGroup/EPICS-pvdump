@@ -34,6 +34,7 @@
 #include <epicsMutex.h>
 #include <iocsh.h>
 #include "macLib.h"
+#include "epicsExit.h"
 
 #include "utilities.h"
 
@@ -199,16 +200,24 @@ static int execute_sql(sqlite3* db, const char* sql)
 	return ret;
 }
 
-extern "C" {
+static void pvdumpOnExit(void*);
 
-int pvdump(const char *dbName, const char *iocName)
+static std::string ioc_name, db_name;    
+
+// define funtion for this table as it is referenced in both pvdump and pvdumpOnExit
+static sql::Table* openIocrtTable(sql::Database& db)
 {
+    return sql::Table::createFromDefinition(db.getHandle(), "iocrt", 
+		    "iocname TEXT, pid INTEGER, start_time INTEGER, stop_time INTEGER, running INTEGER, exe_path TEXT");
+}
+static int pvdump(const char *dbName, const char *iocName)
+{
+    static int first_call = 1;
     int pid = get_pid();
     std::string exepath = get_path();
         
     time_t currtime;
     time(&currtime);
-	std::string ioc_name, db_name;    
 	if (NULL != iocName)
 	{
 	    ioc_name = iocName;
@@ -217,7 +226,7 @@ int pvdump(const char *dbName, const char *iocName)
 	{
 	    ioc_name = getIOCName();
 	}
-	printf("pvdump: ioc name is \"%s\"\n", ioc_name.c_str());
+	printf("pvdump: ioc name is \"%s\" pid %d\n", ioc_name.c_str(), pid);
     const char* epicsRoot = macEnvExpand("$(EPICS_ROOT)");
 	if (NULL == epicsRoot)
 	{
@@ -258,8 +267,7 @@ int pvdump(const char *dbName, const char *iocName)
 		    "iocname TEXT, dir TEXT, consoleport INT, logport INT, exe TEXT, cmd TEXT");
 		sql::Table* table_pvs = sql::Table::createFromDefinition(db.getHandle(), "pvs", "pvname TEXT, record_type TEXT, iocname TEXT"); 
 		sql::Table* table_pvinfo = sql::Table::createFromDefinition(db.getHandle(), "pvinfo", "pvname TEXT, infoname TEXT, value TEXT");
-		sql::Table* table_iocrt = sql::Table::createFromDefinition(db.getHandle(), "iocrt", 
-		    "iocname TEXT, pid INTEGER, start_time INTEGER, exe_path TEXT");
+		sql::Table* table_iocrt = openIocrtTable(db);
 
         db.transactionBegin();
 		table_iocrt->deleteRecords(std::string("iocname='")+ioc_name+"'"); // delete our old entry from iocrt
@@ -276,6 +284,8 @@ int pvdump(const char *dbName, const char *iocName)
         iocrt_record.setString("iocname", ioc_name);
         iocrt_record.setInteger("pid", pid);
         iocrt_record.setTime("start_time", currtime);
+        iocrt_record.setTime("stop_time", 0);
+        iocrt_record.setInteger("running", 1);
         iocrt_record.setString("exe_path", exepath);
         
         const clock_t begin_time = clock();
@@ -298,6 +308,7 @@ int pvdump(const char *dbName, const char *iocName)
 			}
         }
         db.transactionCommit();
+		delete table_iocrt, table_pvinfo, table_pvs, table_iocs;
         std::cout << "pvdump: write took: " << float( clock () - begin_time ) /  CLOCKS_PER_SEC << std::endl;
     }
 	catch(const std::exception& ex)
@@ -314,8 +325,50 @@ int pvdump(const char *dbName, const char *iocName)
     {
         printf("pvdump: ERROR: FAILED TRYING TO WRITE TO THE ISIS PV DB\n");
         return -1;
-    }        
+    }
+	if (first_call)
+	{
+        epicsAtExit(pvdumpOnExit, NULL); // register exit handler to change "running" state etc. in db
+	}
+	first_call = 0;
     return 0;
+}
+
+static void pvdumpOnExit(void*)
+{
+    time_t currtime;
+    time(&currtime);
+	printf("pvdump: calling exit handler for ioc \"%s\"\n", ioc_name.c_str()); 
+    sql::Database db;          
+    try 
+    {
+        db.open(db_name, 20000);
+		execute_sql(db.getHandle(), "PRAGMA foreign_keys = ON");
+		sql::Table* table_iocrt = openIocrtTable(db);
+		table_iocrt->open(std::string("iocname='")+ioc_name+"'");
+		if (table_iocrt->recordCount() != 1)
+		{
+		    throw std::runtime_error("pvdump: no record for ioc in iocrt");
+		}
+		sql::Record* iocrt_record = table_iocrt->getRecord(0);  // first and only record
+        iocrt_record->setNull("pid");
+        iocrt_record->setTime("stop_time", currtime);
+        iocrt_record->setInteger("running", 0);
+		table_iocrt->updateRecord(iocrt_record);
+		delete table_iocrt;
+	}
+	catch(const std::exception& ex)
+	{
+		printf("pvdump: ERROR: %s\n", ex.what());
+	}
+	catch(const sql::Exception& ex) // sql::Exception does not inherit from std::exception, so need to catch separately 
+	{
+		printf("pvdump: sql ERROR: %s\n", ex.msg().c_str());
+	}
+    catch(...)
+    {
+        printf("pvdump: ERROR: FAILED TRYING TO WRITE TO THE ISIS PV DB\n");
+    }        
 }
 
 // EPICS iocsh shell commands 
@@ -331,6 +384,9 @@ static void initCallFunc(const iocshArgBuf *args)
 {
     pvdump(args[0].sval, args[1].sval);
 }
+
+extern "C" 
+{
 
 static void pvdumpRegister(void)
 {
