@@ -188,16 +188,21 @@ static void dump_pvs(const char *precordTypename, const char *fields, std::map<s
     dbFinishEntry(pdbentry);
 }
 
+// return 0 on success, -1 on error
 static int execute_sql(sqlite3* db, const char* sql)
 {
     char* errmsg = NULL;
     int ret = sqlite3_exec(db, sql, NULL, NULL, &errmsg);
+	if (ret != SQLITE_OK)
+	{
+		printf("pvdump: sqlite3 error code : %d\n", ret);
+	}
 	if (errmsg != NULL)
 	{
 		printf("pvdump: sqlite3: %s\n", errmsg);
 	    sqlite3_free(errmsg);
 	}
-	return ret;
+	return ret == SQLITE_OK ? 0 : -1;
 }
 
 static void pvdumpOnExit(void*);
@@ -340,22 +345,13 @@ static void pvdumpOnExit(void*)
     time(&currtime);
 	printf("pvdump: calling exit handler for ioc \"%s\"\n", ioc_name.c_str()); 
     sql::Database db;          
+	std::ostringstream sql;
     try 
     {
         db.open(db_name, 20000);
 		execute_sql(db.getHandle(), "PRAGMA foreign_keys = ON");
-		sql::Table* table_iocrt = openIocrtTable(db);
-		table_iocrt->open(std::string("iocname='")+ioc_name+"'");
-		if (table_iocrt->recordCount() != 1)
-		{
-		    throw std::runtime_error("pvdump: no record for ioc in iocrt");
-		}
-		sql::Record* iocrt_record = table_iocrt->getRecord(0);  // first and only record
-        iocrt_record->setNull("pid");
-        iocrt_record->setTime("stop_time", currtime);
-        iocrt_record->setInteger("running", 0);
-		table_iocrt->updateRecord(iocrt_record);
-		delete table_iocrt;
+		sql << "UPDATE iocrt SET pid=NULL, stop_time=" << currtime << ", running=0 WHERE iocname='" << ioc_name << "'";
+		execute_sql(db.getHandle(), sql.str().c_str());
 	}
 	catch(const std::exception& ex)
 	{
