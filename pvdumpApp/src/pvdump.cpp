@@ -87,8 +87,10 @@ static std::string get_path()
 struct PVInfo
 {
     std::string record_type;
+    std::string record_desc;
     std::map<std::string,std::string> info_fields;
-	PVInfo(const std::string& rt, const std::map<std::string,std::string>& inf) : record_type(rt), info_fields(inf) { }
+	PVInfo(const std::string& rt, const std::string& rd, const std::map<std::string,std::string>& inf) : 
+        record_type(rt), record_desc(rd), info_fields(inf) { }
 	PVInfo() { }
 };
 
@@ -158,6 +160,12 @@ static void dump_pvs(const char *precordTypename, const char *fields, std::map<s
                     pvalue = dbGetString(pdbentry);
                 }
             }
+            const char* recordType = dbGetRecordTypeName(pdbentry);
+            const char* recordDesc = "";
+            if (dbFindField(pdbentry, "DESC") == 0)
+            {
+                recordDesc = dbGetString(pdbentry);
+            }
 			// info fields
 			info_fields.clear();
 			status2 = dbFirstInfo(pdbentry);
@@ -175,7 +183,7 @@ static void dump_pvs(const char *precordTypename, const char *fields, std::map<s
 				}
 			    status2 = dbNextInfo(pdbentry);
 			}
-			pvs[dbGetRecordName(pdbentry)] = PVInfo((pvalue ? pvalue : ""), info_fields);
+			pvs[dbGetRecordName(pdbentry)] = PVInfo(recordType, recordDesc, info_fields);
             status = dbNextRecord(pdbentry);
         }
         if (precordTypename) break;
@@ -270,7 +278,7 @@ static int pvdump(const char *dbName, const char *iocName)
 		// as it can confus it.
 		sql::Table* table_iocs = sql::Table::createFromDefinition(db.getHandle(), "iocs",
 		    "iocname TEXT, dir TEXT, consoleport INT, logport INT, exe TEXT, cmd TEXT");
-		sql::Table* table_pvs = sql::Table::createFromDefinition(db.getHandle(), "pvs", "pvname TEXT, record_type TEXT, iocname TEXT"); 
+		sql::Table* table_pvs = sql::Table::createFromDefinition(db.getHandle(), "pvs", "pvname TEXT, record_type TEXT, record_desc TEXT, iocname TEXT"); 
 		sql::Table* table_pvinfo = sql::Table::createFromDefinition(db.getHandle(), "pvinfo", "pvname TEXT, infoname TEXT, value TEXT");
 		sql::Table* table_iocrt = openIocrtTable(db);
 
@@ -301,6 +309,7 @@ static int pvdump(const char *dbName, const char *iocName)
         {
             pvs_record.setString("pvname", it->first);
             pvs_record.setString("record_type", it->second.record_type);
+            pvs_record.setString("record_desc", it->second.record_desc);
             pvs_record.setString("iocname", ioc_name);
             table_pvs->addRecord(&pvs_record);
 			const std::map<std::string,std::string>& imap = it->second.info_fields;
