@@ -18,10 +18,12 @@ DBD += pvdump.dbd
 # specify all source files to be compiled and added to the library
 pvdump_SRCS += pvdump.cpp
 
-pvdump_LIBS += easySQLite sqlite utilities $(EPICS_BASE_IOC_LIBS)
+pvdump_LIBS += easySQLite sqlite utilities $(MYSQLLIB) $(EPICS_BASE_IOC_LIBS)
 
 ifeq ($(SHARED_LIBRARIES),YES)
 USR_CPPFLAGS_WIN32 += -DSQLITE_API=__declspec(dllimport)
+else
+#USR_CXXFLAGS += -DCPPCONN_LIB_BUILD
 endif
 
 #===========================

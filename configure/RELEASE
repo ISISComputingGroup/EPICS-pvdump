@@ -30,6 +30,8 @@ EPICS_BASE=C:/development/EPICS/base/3-14-12-2
 SQLITE=$(SUPPORT)/sqlite
 LIBJSON=$(SUPPORT)/libjson
 UTILITIES=$(SUPPORT)/utilities
+MYSQL=$(SUPPORT)/MySQL
+BOOST=$(EPICS_ROOT)/libraries/boost
 
 # Set RULES here if you want to take build rules from somewhere
 # other than EPICS_BASE:
