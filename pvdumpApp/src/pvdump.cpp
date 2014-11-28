@@ -220,22 +220,24 @@ static int execute_sql(sqlite3* db, const char* sql)
 static void pvdumpOnExit(void*);
 
 static std::string ioc_name, db_name;    
+static sql::Driver * mysql_driver;
 
 static int dumpMysql(const std::map<std::string,PVInfo>& pv_map, int pid, const std::string& exepath, time_t currtime)
 {
+	unsigned long npv = 0, ninfo = 0;
 	try 
 	{
         const clock_t begin_time = clock();
-		sql::Driver * driver = sql::mysql::get_driver_instance();
-		std::auto_ptr< sql::Connection > con(driver->connect("localhost", "iocdb", "$iocdb"));
+		mysql_driver = sql::mysql::get_driver_instance();
+		std::auto_ptr< sql::Connection > con(mysql_driver->connect("localhost", "iocdb", "$iocdb"));
 		std::auto_ptr< sql::Statement > stmt(con->createStatement());
-		con->setAutoCommit(0);
-		stmt->execute("USE iocdb");	
+		con->setAutoCommit(0); // we will create transactions ourselves via explicit calls to con->commit()
+		con->setSchema("iocdb");
+		stmt->execute(std::string("DELETE FROM iocrt WHERE iocname='") + ioc_name + "'");
 		std::ostringstream sql;
-		sql << "DELETE FROM iocrt WHERE iocname='" << ioc_name << "';";
-		sql << "DELETE FROM iocrt WHERE pid=" << pid << ";"; // remove any old record from iocrt with our current pid
-		sql << "DELETE FROM pvs WHERE iocname='" << ioc_name << "';"; // remove our PVS from last time, this will also delete records from pvinfo due to foreign key cascade action
+		sql << "DELETE FROM iocrt WHERE pid=" << pid; // remove any old record from iocrt with our current pid
 		stmt->execute(sql.str());
+		stmt->execute(std::string("DELETE FROM pvs WHERE iocname='") + ioc_name + "'"); // remove our PVS from last time, this will also delete records from pvinfo due to foreign key cascade action
 		con->commit();
 		
 		std::auto_ptr< sql::PreparedStatement > iocrt_stmt(con->prepareStatement("INSERT INTO iocrt (iocname, pid, start_time, stop_time, running, exe_path) VALUES (?,?,?,?,?,?)"));
@@ -253,6 +255,7 @@ static int dumpMysql(const std::map<std::string,PVInfo>& pv_map, int pid, const 
 
         for(std::map<std::string,PVInfo>::const_iterator it = pv_map.begin(); it != pv_map.end(); ++it)
         {
+			++npv;
             pvs_stmt->setString(1, it->first);
             pvs_stmt->setString(2, it->second.record_type);
             pvs_stmt->setString(3, it->second.record_desc);
@@ -261,6 +264,7 @@ static int dumpMysql(const std::map<std::string,PVInfo>& pv_map, int pid, const 
 			const std::map<std::string,std::string>& imap = it->second.info_fields;
             for(std::map<std::string,std::string>::const_iterator itinf = imap.begin(); itinf != imap.end(); ++itinf)
 			{
+				++ninfo;
 			    pvinfo_stmt->setString(1, it->first);
 			    pvinfo_stmt->setString(2, itinf->first);
 			    pvinfo_stmt->setString(3, itinf->second);
@@ -268,21 +272,21 @@ static int dumpMysql(const std::map<std::string,PVInfo>& pv_map, int pid, const 
 			}
         }
 		con->commit();
-        std::cout << "pvdump: MySQL write took: " << float( clock () - begin_time ) /  CLOCKS_PER_SEC << std::endl;
+        std::cout << "pvdump: MySQL write of " << npv << " PV and " << ninfo << " info entries took: " << float( clock () - begin_time ) /  CLOCKS_PER_SEC << std::endl;
     }
 	catch (sql::SQLException &e) 
 	{
-		std::cout << "# ERR: " << e.what();
+		std::cout << "pvdump: MySQL ERR: " << e.what();
 		std::cout << " (MySQL error code: " << e.getErrorCode();
 		std::cout << ", SQLState: " << e.getSQLState() << " )" << std::endl;
 	} 
 	catch (std::runtime_error &e)
 	{
-		std::cout << "# ERR: " << e.what() << std::endl;
+		std::cout << "pvdump: MySQL ERR: " << e.what() << std::endl;
 	}
     catch(...)
     {
-        printf("pvdump: ERROR: FAILED TRYING TO WRITE TO THE ISIS PV DB\n");
+        printf("pvdump: MySQL ERR: FAILED TRYING TO WRITE TO THE ISIS PV DB\n");
         return -1;
     }
 	return 0;
@@ -412,7 +416,7 @@ static int pvdump(const char *dbName, const char *iocName)
         printf("pvdump: ERROR: FAILED TRYING TO WRITE TO THE ISIS PV DB\n");
         return -1;
     }
-//	dumpMysql(pv_map, pid, exepath, currtime);
+	dumpMysql(pv_map, pid, exepath, currtime);
 	if (first_call)
 	{
         epicsAtExit(pvdumpOnExit, NULL); // register exit handler to change "running" state etc. in db
@@ -447,6 +451,27 @@ static void pvdumpOnExit(void*)
     {
         printf("pvdump: ERROR: FAILED TRYING TO WRITE TO THE ISIS PV DB\n");
     }        
+	try
+	{
+		std::auto_ptr< sql::Connection > con(mysql_driver->connect("localhost", "iocdb", "$iocdb"));
+		std::auto_ptr< sql::Statement > stmt(con->createStatement());
+		con->setSchema("iocdb");
+		stmt->execute(sql.str());
+	}
+	catch (sql::SQLException &e) 
+	{
+		std::cout << "pvdump: MySQL ERR: " << e.what();
+		std::cout << " (MySQL error code: " << e.getErrorCode();
+		std::cout << ", SQLState: " << e.getSQLState() << " )" << std::endl;
+	} 
+	catch (std::runtime_error &e)
+	{
+		std::cout << "pvdump: MySQL ERR: " << e.what() << std::endl;
+	}
+    catch(...)
+    {
+        printf("pvdump: MySQL ERR: FAILED TRYING TO WRITE TO THE ISIS PV DB\n");
+    }
 }
 
 // EPICS iocsh shell commands 
