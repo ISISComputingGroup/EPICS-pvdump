@@ -222,7 +222,7 @@ static void pvdumpOnExit(void*);
 static std::string ioc_name, db_name;    
 static sql::Driver * mysql_driver;
 
-static int dumpMysql(const std::map<std::string,PVInfo>& pv_map, int pid, const std::string& exepath, time_t currtime)
+static int dumpMysql(const std::map<std::string,PVInfo>& pv_map, int pid, const std::string& exepath)
 {
 	unsigned long npv = 0, ninfo = 0;
 	try 
@@ -240,13 +240,11 @@ static int dumpMysql(const std::map<std::string,PVInfo>& pv_map, int pid, const 
 		stmt->execute(std::string("DELETE FROM pvs WHERE iocname='") + ioc_name + "'"); // remove our PVS from last time, this will also delete records from pvinfo due to foreign key cascade action
 		con->commit();
 		
-		std::auto_ptr< sql::PreparedStatement > iocrt_stmt(con->prepareStatement("INSERT INTO iocrt (iocname, pid, start_time, stop_time, running, exe_path) VALUES (?,?,?,?,?,?)"));
+		std::auto_ptr< sql::PreparedStatement > iocrt_stmt(con->prepareStatement("INSERT INTO iocrt (iocname, pid, start_time, stop_time, running, exe_path) VALUES (?,?,NOW(),'0000-00-00 00:00:00',?,?)"));
 		iocrt_stmt->setString(1,ioc_name);
 		iocrt_stmt->setInt(2,pid);
-		iocrt_stmt->setInt(3,currtime);
-		iocrt_stmt->setInt(4,0);
-		iocrt_stmt->setInt(5,1);
-		iocrt_stmt->setString(6,exepath);
+		iocrt_stmt->setInt(3,1);
+		iocrt_stmt->setString(4,exepath);
 		iocrt_stmt->executeUpdate();
 		con->commit();
         
@@ -416,7 +414,7 @@ static int pvdump(const char *dbName, const char *iocName)
         printf("pvdump: ERROR: FAILED TRYING TO WRITE TO THE ISIS PV DB\n");
         return -1;
     }
-	dumpMysql(pv_map, pid, exepath, currtime);
+	dumpMysql(pv_map, pid, exepath);
 	if (first_call)
 	{
         epicsAtExit(pvdumpOnExit, NULL); // register exit handler to change "running" state etc. in db
@@ -431,10 +429,10 @@ static void pvdumpOnExit(void*)
     time(&currtime);
 	printf("pvdump: calling exit handler for ioc \"%s\"\n", ioc_name.c_str()); 
     sql::Database db;          
-	std::ostringstream sql;
     try 
     {
         db.open(db_name, 20000);
+	    std::ostringstream sql;
 		execute_sql(db.getHandle(), "PRAGMA foreign_keys = ON");
 		sql << "UPDATE iocrt SET pid=NULL, stop_time=" << currtime << ", running=0 WHERE iocname='" << ioc_name << "'";
 		execute_sql(db.getHandle(), sql.str().c_str());
@@ -456,6 +454,8 @@ static void pvdumpOnExit(void*)
 		std::auto_ptr< sql::Connection > con(mysql_driver->connect("localhost", "iocdb", "$iocdb"));
 		std::auto_ptr< sql::Statement > stmt(con->createStatement());
 		con->setSchema("iocdb");
+	    std::ostringstream sql;
+		sql << "UPDATE iocrt SET pid=NULL, start_time=start_time, stop_time=NOW(), running=0 WHERE iocname='" << ioc_name << "'";
 		stmt->execute(sql.str());
 	}
 	catch (sql::SQLException &e) 
