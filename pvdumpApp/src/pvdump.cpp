@@ -222,9 +222,11 @@ static void pvdumpOnExit(void*);
 static std::string ioc_name, db_name;    
 static sql::Driver * mysql_driver;
 
+static const int MAX_MACRO_VAL_LENGTH = 100; // should agree with length of macroval in iocenv MySQL table (iocdb_mysql_schema.txt)
+
 static int dumpMysql(const std::map<std::string,PVInfo>& pv_map, int pid, const std::string& exepath)
 {
-	unsigned long npv = 0, ninfo = 0;
+	unsigned long npv = 0, ninfo = 0, nmacro = 0;
 	try 
 	{
         const clock_t begin_time = clock();
@@ -234,6 +236,7 @@ static int dumpMysql(const std::map<std::string,PVInfo>& pv_map, int pid, const 
 		con->setAutoCommit(0); // we will create transactions ourselves via explicit calls to con->commit()
 		con->setSchema("iocdb");
 		stmt->execute(std::string("DELETE FROM iocrt WHERE iocname='") + ioc_name + "'");
+		stmt->execute(std::string("DELETE FROM iocenv WHERE iocname='") + ioc_name + "'");
 		std::ostringstream sql;
 		sql << "DELETE FROM iocrt WHERE pid=" << pid; // remove any old record from iocrt with our current pid
 		stmt->execute(sql.str());
@@ -250,7 +253,6 @@ static int dumpMysql(const std::map<std::string,PVInfo>& pv_map, int pid, const 
         
 		std::auto_ptr< sql::PreparedStatement > pvs_stmt(con->prepareStatement("INSERT INTO pvs (pvname, record_type, record_desc, iocname) VALUES (?,?,?,?)"));
 		std::auto_ptr< sql::PreparedStatement > pvinfo_stmt(con->prepareStatement("INSERT INTO pvinfo (pvname, infoname, value) VALUES (?,?,?)"));
-
         for(std::map<std::string,PVInfo>::const_iterator it = pv_map.begin(); it != pv_map.end(); ++it)
         {
 			++npv;
@@ -269,18 +271,44 @@ static int dumpMysql(const std::map<std::string,PVInfo>& pv_map, int pid, const 
 				pvinfo_stmt->executeUpdate();
 			}
         }
+
+        char **sp;
+		char *envbit1, *envbit2;
+		std::auto_ptr< sql::PreparedStatement > iocenv_stmt(con->prepareStatement("INSERT INTO iocenv (iocname, macroname, macroval) VALUES (?,?,?)"));
+		iocenv_stmt->setString(1, ioc_name);
+        for (sp = environ ; (sp != NULL) && (*sp != NULL) ; ++sp)
+		{
+		    envbit1 = strdup(*sp);   // name=value string  
+			envbit2 = strchr(envbit1, '='); 
+			if (NULL != envbit2)
+			{
+			    envbit1[envbit2-envbit1] = '\0';  // NULL out '='
+			    ++envbit2;
+				if (strlen(envbit2) < MAX_MACRO_VAL_LENGTH)  // ignore things with long values like PATH
+				{
+		            iocenv_stmt->setString(2, envbit1); // name
+		            iocenv_stmt->setString(3, envbit2); // value
+			        iocenv_stmt->executeUpdate();
+				    ++nmacro;
+				}
+			}
+			free(envbit1);
+		}
 		con->commit();
-        std::cout << "pvdump: MySQL write of " << npv << " PV and " << ninfo << " info entries took: " << float( clock () - begin_time ) /  CLOCKS_PER_SEC << std::endl;
+
+        std::cout << "pvdump: MySQL write of " << npv << " PV with " << ninfo << " info entries, plus " << nmacro << " macros took: " << float( clock () - begin_time ) /  CLOCKS_PER_SEC << std::endl;
     }
 	catch (sql::SQLException &e) 
 	{
 		std::cout << "pvdump: MySQL ERR: " << e.what();
 		std::cout << " (MySQL error code: " << e.getErrorCode();
 		std::cout << ", SQLState: " << e.getSQLState() << " )" << std::endl;
+        return -1;
 	} 
 	catch (std::runtime_error &e)
 	{
 		std::cout << "pvdump: MySQL ERR: " << e.what() << std::endl;
+        return -1;
 	}
     catch(...)
     {
@@ -401,18 +429,15 @@ static int pvdump(const char *dbName, const char *iocName)
     }
 	catch(const std::exception& ex)
 	{
-		printf("pvdump: ERROR: %s\n", ex.what());
-        return -1;
+		printf("pvdump: sqlite: ERROR: %s\n", ex.what());
 	}
 	catch(const sql::Exception& ex) // sql::Exception does not inherit from std::exception, so need to catch separately 
 	{
-		printf("pvdump: sql ERROR: %s\n", ex.msg().c_str());
-        return -1;
+		printf("pvdump: sqlite: sql ERROR: %s\n", ex.msg().c_str());
 	}
     catch(...)
     {
-        printf("pvdump: ERROR: FAILED TRYING TO WRITE TO THE ISIS PV DB\n");
-        return -1;
+        printf("pvdump: sqlite: ERROR: FAILED TRYING TO WRITE TO THE ISIS PV DB\n");
     }
 	dumpMysql(pv_map, pid, exepath);
 	if (first_call)
