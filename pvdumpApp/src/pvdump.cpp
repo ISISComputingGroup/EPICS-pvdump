@@ -348,15 +348,6 @@ static int pvdump(const char *dbName, const char *iocName)
 		printf("pvdump: ERROR: EPICS_ROOT is NULL - cannot continue\n");
 	    return -1;
 	}
-    if (NULL != dbName)
-	{
-	    db_name = dbName;
-	}
-	else
-	{
-		db_name = std::string(epicsRoot) + "/iocs.sq3";  // default database name
-	}
-	printf("pvdump: db name is \"%s\"\n", db_name.c_str()); 
     
     //PV stuff
 	std::map<std::string,PVInfo> pv_map;
@@ -369,8 +360,18 @@ static int pvdump(const char *dbName, const char *iocName)
 		printf("pvdump: ERROR: %s\n", ex.what());
 		return -1;
 	}
-    
+
+#if 0 /* old sqlite */   
     sql::Database db;      
+    if (NULL != dbName)
+	{
+	    db_name = dbName;
+	}
+	else
+	{
+		db_name = std::string(epicsRoot) + "/iocs.sq3";  // default database name
+	}
+	printf("pvdump: sqlite db name is \"%s\"\n", db_name.c_str()); 
     
     try 
     {
@@ -439,6 +440,7 @@ static int pvdump(const char *dbName, const char *iocName)
     {
         printf("pvdump: sqlite: ERROR: FAILED TRYING TO WRITE TO THE ISIS PV DB\n");
     }
+#endif /* old sqlite */
 	dumpMysql(pv_map, pid, exepath);
 	if (first_call)
 	{
@@ -452,7 +454,8 @@ static void pvdumpOnExit(void*)
 {
     time_t currtime;
     time(&currtime);
-	printf("pvdump: calling exit handler for ioc \"%s\"\n", ioc_name.c_str()); 
+	printf("pvdump: calling exit handler for ioc \"%s\"\n", ioc_name.c_str());
+#if 0 /* old sqlite */	 
     sql::Database db;          
     try 
     {
@@ -473,7 +476,8 @@ static void pvdumpOnExit(void*)
     catch(...)
     {
         printf("pvdump: ERROR: FAILED TRYING TO WRITE TO THE ISIS PV DB\n");
-    }        
+    }
+#endif /* old sqlite */
 	try
 	{
 		std::auto_ptr< sql::Connection > con(mysql_driver->connect("localhost", "iocdb", "$iocdb"));
