@@ -33,6 +33,7 @@
 #include <epicsTimer.h>
 #include <epicsMutex.h>
 #include <iocsh.h>
+#include <errlog.h>
 #include "macLib.h"
 #include "epicsExit.h"
 
@@ -250,6 +251,15 @@ static int dumpMysql(const std::map<std::string,PVInfo>& pv_map, int pid, const 
 		iocrt_stmt->setString(4,exepath);
 		iocrt_stmt->executeUpdate();
 		con->commit();
+
+        // use DELETE and INSERT on pvs table as we may have the same pv name from a different IOC e.g. CAENSIM and CAEN
+		std::auto_ptr< sql::PreparedStatement > pvs_dstmt(con->prepareStatement("DELETE FROM pvs WHERE pvname=?"));
+        for(std::map<std::string,PVInfo>::const_iterator it = pv_map.begin(); it != pv_map.end(); ++it)
+        {
+            pvs_dstmt->setString(1, it->first);
+			pvs_dstmt->executeUpdate();
+        }
+		con->commit();
         
 		std::auto_ptr< sql::PreparedStatement > pvs_stmt(con->prepareStatement("INSERT INTO pvs (pvname, record_type, record_desc, iocname) VALUES (?,?,?,?)"));
 		std::auto_ptr< sql::PreparedStatement > pvinfo_stmt(con->prepareStatement("INSERT INTO pvinfo (pvname, infoname, value) VALUES (?,?,?)"));
@@ -296,23 +306,21 @@ static int dumpMysql(const std::map<std::string,PVInfo>& pv_map, int pid, const 
 		}
 		con->commit();
 
-        std::cout << "pvdump: MySQL write of " << npv << " PV with " << ninfo << " info entries, plus " << nmacro << " macros took: " << float( clock () - begin_time ) /  CLOCKS_PER_SEC << std::endl;
+        std::cout << "pvdump: MySQL write of " << npv << " PVs with " << ninfo << " info entries, plus " << nmacro << " macros took " << float( clock () - begin_time ) /  CLOCKS_PER_SEC << " seconds" << std::endl;
     }
 	catch (sql::SQLException &e) 
 	{
-		std::cout << "pvdump: MySQL ERR: " << e.what();
-		std::cout << " (MySQL error code: " << e.getErrorCode();
-		std::cout << ", SQLState: " << e.getSQLState() << " )" << std::endl;
+        errlogSevPrintf(errlogMinor, "pvdump: MySQL ERR: %s (MySQL error code: %d, SQLState: %s)", e.what(), e.getErrorCode(), e.getSQLStateCStr());
         return -1;
 	} 
 	catch (std::runtime_error &e)
 	{
-		std::cout << "pvdump: MySQL ERR: " << e.what() << std::endl;
+        errlogSevPrintf(errlogMinor, "pvdump: MySQL ERR: %s", e.what());
         return -1;
 	}
     catch(...)
     {
-        printf("pvdump: MySQL ERR: FAILED TRYING TO WRITE TO THE ISIS PV DB\n");
+        errlogSevPrintf(errlogMinor, "pvdump: MySQL ERR: FAILED TRYING TO WRITE TO THE ISIS PV DB");
         return -1;
     }
 	return 0;
@@ -345,7 +353,7 @@ static int pvdump(const char *dbName, const char *iocName)
     const char* epicsRoot = macEnvExpand("$(EPICS_ROOT)");
 	if (NULL == epicsRoot)
 	{
-		printf("pvdump: ERROR: EPICS_ROOT is NULL - cannot continue\n");
+        errlogSevPrintf(errlogMinor, "pvdump: ERROR: EPICS_ROOT is NULL - cannot continue");
 	    return -1;
 	}
     
@@ -357,7 +365,7 @@ static int pvdump(const char *dbName, const char *iocName)
 	}
 	catch(const std::exception& ex)
 	{
-		printf("pvdump: ERROR: %s\n", ex.what());
+        errlogSevPrintf(errlogMinor, "pvdump: ERROR: %s", ex.what());
 		return -1;
 	}
 
@@ -489,17 +497,18 @@ static void pvdumpOnExit(void*)
 	}
 	catch (sql::SQLException &e) 
 	{
-		std::cout << "pvdump: MySQL ERR: " << e.what();
-		std::cout << " (MySQL error code: " << e.getErrorCode();
-		std::cout << ", SQLState: " << e.getSQLState() << " )" << std::endl;
+        errlogSevPrintf(errlogMinor, "pvdump: MySQL ERR: %s (MySQL error code: %d, SQLState: %s)", e.what(), e.getErrorCode(), e.getSQLStateCStr());
+        return;
 	} 
 	catch (std::runtime_error &e)
 	{
-		std::cout << "pvdump: MySQL ERR: " << e.what() << std::endl;
+        errlogSevPrintf(errlogMinor, "pvdump: MySQL ERR: %s", e.what());
+        return;
 	}
     catch(...)
     {
-        printf("pvdump: MySQL ERR: FAILED TRYING TO WRITE TO THE ISIS PV DB\n");
+        errlogSevPrintf(errlogMinor, "pvdump: MySQL ERR: FAILED TRYING TO WRITE TO THE ISIS PV DB");
+        return;
     }
 }
 
