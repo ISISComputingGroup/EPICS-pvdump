@@ -2,7 +2,7 @@
 /// @file pvdump.cpp
 /// @author Freddie Akeroyd, STFC ISIS Facility
 ///
-/// Dump all PV's in the IOC to a sqlite database file
+/// Dump all PV's in the IOC to a MySQL database file
 ///
 #include <stdlib.h>
 #include <string.h>
@@ -96,8 +96,12 @@ struct PVInfo
     std::map<std::string,std::string> info_fields;
 	PVInfo(const std::string& rt, const std::string& rd, const std::map<std::string,std::string>& inf) : 
         record_type(rt), record_desc(rd), info_fields(inf) { }
+	PVInfo(const std::string& rt, const std::string& rd) : 
+        record_type(rt), record_desc(rd) { }
 	PVInfo() { }
 };
+
+static std::map<std::string,PVInfo> pv_map;
 
 // based on iocsh dbl command from epics_base/src/db/dbTest.c 
 // return an std map, currently key is pv and value is recordType (if that is defined)
@@ -110,6 +114,7 @@ static void dump_pvs(const char *precordTypename, const char *fields, std::map<s
     int ifield;
     char *fieldnames = 0;
     char **papfields = 0;
+    pvs.clear();
 
     if (!pdbbase) {
         throw std::runtime_error("No database loaded\n");
@@ -231,15 +236,14 @@ static int dumpMysql(const std::map<std::string,PVInfo>& pv_map, int pid, const 
 	try 
 	{
         const clock_t begin_time = clock();
-		mysql_driver = sql::mysql::get_driver_instance();
-		std::auto_ptr< sql::Connection > con(mysql_driver->connect("localhost", "iocdb", "$iocdb"));
-		std::auto_ptr< sql::Statement > stmt(con->createStatement());
-		con->setAutoCommit(0); // we will create transactions ourselves via explicit calls to con->commit()
-		con->setSchema("iocdb");
-		stmt->execute(std::string("DELETE FROM iocrt WHERE iocname='") + ioc_name + "'");
+	    mysql_driver = sql::mysql::get_driver_instance();
+	    std::auto_ptr< sql::Connection > con(mysql_driver->connect("localhost", "iocdb", "$iocdb"));
+	    std::auto_ptr< sql::Statement > stmt(con->createStatement());
+	    con->setAutoCommit(0); // we will create transactions ourselves via explicit calls to con->commit()
+	    con->setSchema("iocdb");
 		stmt->execute(std::string("DELETE FROM iocenv WHERE iocname='") + ioc_name + "'");
 		std::ostringstream sql;
-		sql << "DELETE FROM iocrt WHERE pid=" << pid; // remove any old record from iocrt with our current pid
+		sql << "DELETE FROM iocrt WHERE iocname='" << ioc_name << "' OR pid=" << pid; // remove any old record from iocrt with our current pid or name
 		stmt->execute(sql.str());
 		stmt->execute(std::string("DELETE FROM pvs WHERE iocname='") + ioc_name + "'"); // remove our PVS from last time, this will also delete records from pvinfo due to foreign key cascade action
 		con->commit();
@@ -358,7 +362,6 @@ static int pvdump(const char *dbName, const char *iocName)
 	}
     
     //PV stuff
-	std::map<std::string,PVInfo> pv_map;
 	try
 	{
 		dump_pvs(NULL, NULL, pv_map);
@@ -535,6 +538,43 @@ static void pvdumpRegister(void)
 }
 
 epicsExportRegistrar(pvdumpRegister);
+
+// these functions are for external non-IOC programs to add PVs e.g. c# channell access server
+epicsShareFunc int pvdumpAddPV(const char* pvname, const char* record_type, const char* record_desc)
+{
+    pv_map[pvname] = PVInfo(record_type, record_desc);
+    return 0;
+}
+
+epicsShareFunc int pvdumpAddPVInfo(const char* pvname, const char* info_name, const char* info_value)
+{
+    pv_map[pvname].info_fields[info_name] = info_value;
+    return 0;
+}
+
+epicsShareFunc int pvdumpWritePVs(const char* iocname)
+{
+    int pid = get_pid();
+    std::string exepath = get_path();
+    if (iocname && *iocname)
+    {
+        setIOCName(iocname);
+    }
+    else
+    {
+        const char* exe_end = strrchr(exepath.c_str(), '\\');
+        if (exe_end != NULL)
+        {
+            setIOCName(exe_end + 1);
+        }
+        else
+        {
+            setIOCName(exepath.c_str());
+        }
+    }    
+    ioc_name = getIOCName();
+    return dumpMysql(pv_map, pid, exepath);
+}
 
 }
 
