@@ -238,14 +238,17 @@ static int dumpMysql(const std::map<std::string,PVInfo>& pv_map, int pid, const 
         const clock_t begin_time = clock();
 	    mysql_driver = sql::mysql::get_driver_instance();
 	    std::auto_ptr< sql::Connection > con(mysql_driver->connect("localhost", "iocdb", "$iocdb"));
-	    std::auto_ptr< sql::Statement > stmt(con->createStatement());
+        // the ORDER BY is to make deletes happen in a consistent primary key order, and so try and avoid deadlocks
+        // but it may not be completely right. Additional indexes have also been added to database tables.
 	    con->setAutoCommit(0); // we will create transactions ourselves via explicit calls to con->commit()
 	    con->setSchema("iocdb");
-		stmt->execute(std::string("DELETE FROM iocenv WHERE iocname='") + ioc_name + "'");
+
+	    std::auto_ptr< sql::Statement > stmt(con->createStatement());
+		stmt->execute(std::string("DELETE FROM iocenv WHERE iocname='") + ioc_name + "' ORDER BY iocname,macroname");
 		std::ostringstream sql;
-		sql << "DELETE FROM iocrt WHERE iocname='" << ioc_name << "' OR pid=" << pid; // remove any old record from iocrt with our current pid or name
+		sql << "DELETE FROM iocrt WHERE iocname='" << ioc_name << "' OR pid=" << pid << " ORDER BY iocname"; // remove any old record from iocrt with our current pid or name
 		stmt->execute(sql.str());
-		stmt->execute(std::string("DELETE FROM pvs WHERE iocname='") + ioc_name + "'"); // remove our PVS from last time, this will also delete records from pvinfo due to foreign key cascade action
+		stmt->execute(std::string("DELETE FROM pvs WHERE iocname='") + ioc_name + "' ORDER BY pvname"); // remove our PVS from last time, this will also delete records from pvinfo due to foreign key cascade action
 		con->commit();
 		
 		std::auto_ptr< sql::PreparedStatement > iocrt_stmt(con->prepareStatement("INSERT INTO iocrt (iocname, pid, start_time, stop_time, running, exe_path) VALUES (?,?,NOW(),'0000-00-00 00:00:00',?,?)"));
@@ -285,6 +288,7 @@ static int dumpMysql(const std::map<std::string,PVInfo>& pv_map, int pid, const 
 				pvinfo_stmt->executeUpdate();
 			}
         }
+		con->commit();
 
         char **sp;
 		char *envbit1, *envbit2;
@@ -563,6 +567,10 @@ epicsShareFunc int pvdumpWritePVs(const char* iocname)
     else
     {
         const char* exe_end = strrchr(exepath.c_str(), '\\');
+        if (exe_end == NULL)
+        {
+            exe_end = strrchr(exepath.c_str(), '/');
+        }
         if (exe_end != NULL)
         {
             setIOCName(exe_end + 1);
