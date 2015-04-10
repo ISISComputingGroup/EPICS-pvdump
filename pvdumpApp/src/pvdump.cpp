@@ -581,6 +581,7 @@ epicsShareFunc int pvdumpWritePVs(const char* iocname)
         }
     }    
     ioc_name = getIOCName();
+    printf("pvdump: IOC name is \"%s\"\n", ioc_name.c_str());
     return dumpMysql(pv_map, pid, exepath);
 }
 
