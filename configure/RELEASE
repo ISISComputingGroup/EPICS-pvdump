@@ -27,10 +27,13 @@ TEMPLATE_TOP=$(EPICS_BASE)/templates/makeBaseApp/top
 # EPICS_BASE usually appears last so other apps can override stuff:
 EPICS_BASE=C:/development/EPICS/base/3-14-12-2
 
-SQLITE=$(SUPPORT)/sqlite
 LIBJSON=$(SUPPORT)/libjson
 UTILITIES=$(SUPPORT)/utilities
+PCRE=$(SUPPORT)/pcre
 MYSQL=$(SUPPORT)/MySQL
+ZLIB=$(SUPPORT)/zlib/1-2-8
+PVDUMP=$(SUPPORT)/pvdump
+SQLITE=$(SUPPORT)/sqlite
 BOOST=$(EPICS_ROOT)/libraries/boost
 
 # Set RULES here if you want to take build rules from somewhere
