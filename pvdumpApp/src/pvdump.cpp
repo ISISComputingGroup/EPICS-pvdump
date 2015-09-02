@@ -233,11 +233,12 @@ static const int MAX_MACRO_VAL_LENGTH = 100; // should agree with length of macr
 static int dumpMysql(const std::map<std::string,PVInfo>& pv_map, int pid, const std::string& exepath)
 {
 	unsigned long npv = 0, ninfo = 0, nmacro = 0;
+	const char* mysqlHost = macEnvExpand("$(MYSQLHOST=localhost)");
 	try 
 	{
         const clock_t begin_time = clock();
 	    mysql_driver = sql::mysql::get_driver_instance();
-	    std::auto_ptr< sql::Connection > con(mysql_driver->connect("localhost", "iocdb", "$iocdb"));
+	    std::auto_ptr< sql::Connection > con(mysql_driver->connect(mysqlHost, "iocdb", "$iocdb"));
         // the ORDER BY is to make deletes happen in a consistent primary key order, and so try and avoid deadlocks
         // but it may not be completely right. Additional indexes have also been added to database tables.
 	    con->setAutoCommit(0); // we will create transactions ourselves via explicit calls to con->commit()
@@ -493,9 +494,10 @@ static void pvdumpOnExit(void*)
         printf("pvdump: ERROR: FAILED TRYING TO WRITE TO THE ISIS PV DB\n");
     }
 #endif /* old sqlite */
+    const char* mysqlHost = macEnvExpand("$(MYSQLHOST=localhost)");
 	try
 	{
-		std::auto_ptr< sql::Connection > con(mysql_driver->connect("localhost", "iocdb", "$iocdb"));
+		std::auto_ptr< sql::Connection > con(mysql_driver->connect(mysqlHost, "iocdb", "$iocdb"));
 		std::auto_ptr< sql::Statement > stmt(con->createStatement());
 		con->setSchema("iocdb");
 	    std::ostringstream sql;
