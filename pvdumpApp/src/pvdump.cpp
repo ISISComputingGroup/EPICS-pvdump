@@ -457,10 +457,14 @@ static int pvdump(const char *dbName, const char *iocName)
         printf("pvdump: sqlite: ERROR: FAILED TRYING TO WRITE TO THE ISIS PV DB\n");
     }
 #endif /* old sqlite */
-	dumpMysql(pv_map, pid, exepath);
-	if (first_call)
+	int ret = dumpMysql(pv_map, pid, exepath);
+	if (ret == 0)
 	{
-        epicsAtExit(pvdumpOnExit, NULL); // register exit handler to change "running" state etc. in db
+	    // only install exit handler if we connect OK to mysql 
+	    if (first_call)
+	    {
+            epicsAtExit(pvdumpOnExit, NULL); // register exit handler to change "running" state etc. in db
+	    }
 	}
 	first_call = 0;
     return 0;
@@ -504,19 +508,20 @@ static void pvdumpOnExit(void*)
 		sql << "UPDATE iocrt SET pid=NULL, start_time=start_time, stop_time=NOW(), running=0 WHERE iocname='" << ioc_name << "'";
 		stmt->execute(sql.str());
 	}
+	// not sure of state of EPICS errlog during exit handlers, so use plain old stderr for safety
 	catch (sql::SQLException &e) 
 	{
-        errlogSevPrintf(errlogMinor, "pvdump: MySQL ERR: %s (MySQL error code: %d, SQLState: %s)", e.what(), e.getErrorCode(), e.getSQLStateCStr());
+		fprintf(stderr, "pvdump: MySQL ERR: %s (MySQL error code: %d, SQLState: %s)", e.what(), e.getErrorCode(), e.getSQLStateCStr());
         return;
 	} 
 	catch (std::runtime_error &e)
 	{
-        errlogSevPrintf(errlogMinor, "pvdump: MySQL ERR: %s", e.what());
+		fprintf(stderr, "pvdump: MySQL ERR: %s", e.what());
         return;
 	}
     catch(...)
     {
-        errlogSevPrintf(errlogMinor, "pvdump: MySQL ERR: FAILED TRYING TO WRITE TO THE ISIS PV DB");
+		fprintf(stderr, "pvdump: MySQL ERR: FAILED TRYING TO WRITE TO THE ISIS PV DB");
         return;
     }
 }
