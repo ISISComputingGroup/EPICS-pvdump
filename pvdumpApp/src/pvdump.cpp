@@ -46,7 +46,16 @@
 #include "SqlTable.h"
 
 // mysql
-#include <mysql_public_iface.h>
+#include <cppconn/driver.h>
+#include <cppconn/exception.h>
+#include <cppconn/warning.h>
+#include <cppconn/metadata.h>
+#include <cppconn/prepared_statement.h>
+#include <cppconn/resultset.h>
+#include <cppconn/resultset_metadata.h>
+#include <cppconn/statement.h>
+#include "mysql_driver.h"
+#include "mysql_connection.h"
 
 #ifdef _WIN32
 #include <process.h>
