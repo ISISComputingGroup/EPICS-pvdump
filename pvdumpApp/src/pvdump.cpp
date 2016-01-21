@@ -16,6 +16,7 @@
 #include <string>
 #include <time.h>
 #include <sstream>
+#include <fstream>
 
 #include "epicsStdlib.h"
 #include "epicsString.h"
@@ -328,17 +329,17 @@ static int dumpMysql(const std::map<std::string,PVInfo>& pv_map, int pid, const 
     }
 	catch (sql::SQLException &e) 
 	{
-        errlogSevPrintf(errlogMinor, "pvdump: MySQL ERR: %s (MySQL error code: %d, SQLState: %s)", e.what(), e.getErrorCode(), e.getSQLStateCStr());
+        errlogSevPrintf(errlogMinor, "pvdump: MySQL ERR: %s (MySQL error code: %d, SQLState: %s)\n", e.what(), e.getErrorCode(), e.getSQLStateCStr());
         return -1;
 	} 
 	catch (std::runtime_error &e)
 	{
-        errlogSevPrintf(errlogMinor, "pvdump: MySQL ERR: %s", e.what());
+        errlogSevPrintf(errlogMinor, "pvdump: MySQL ERR: %s\n", e.what());
         return -1;
 	}
     catch(...)
     {
-        errlogSevPrintf(errlogMinor, "pvdump: MySQL ERR: FAILED TRYING TO WRITE TO THE ISIS PV DB");
+        errlogSevPrintf(errlogMinor, "pvdump: MySQL ERR: FAILED TRYING TO WRITE TO THE ISIS PV DB\n");
         return -1;
     }
 	return 0;
@@ -371,7 +372,7 @@ static int pvdump(const char *dbName, const char *iocName)
     const char* epicsRoot = macEnvExpand("$(EPICS_ROOT)");
 	if (NULL == epicsRoot)
 	{
-        errlogSevPrintf(errlogMinor, "pvdump: ERROR: EPICS_ROOT is NULL - cannot continue");
+        errlogSevPrintf(errlogMinor, "pvdump: ERROR: EPICS_ROOT is NULL - cannot continue\n");
 	    return -1;
 	}
     
@@ -382,7 +383,7 @@ static int pvdump(const char *dbName, const char *iocName)
 	}
 	catch(const std::exception& ex)
 	{
-        errlogSevPrintf(errlogMinor, "pvdump: ERROR: %s", ex.what());
+        errlogSevPrintf(errlogMinor, "pvdump: ERROR: %s\n", ex.what());
 		return -1;
 	}
 
@@ -520,33 +521,90 @@ static void pvdumpOnExit(void*)
 	// not sure of state of EPICS errlog during exit handlers, so use plain old stderr for safety
 	catch (sql::SQLException &e) 
 	{
-		fprintf(stderr, "pvdump: MySQL ERR: %s (MySQL error code: %d, SQLState: %s)", e.what(), e.getErrorCode(), e.getSQLStateCStr());
+		fprintf(stderr, "pvdump: MySQL ERR: %s (MySQL error code: %d, SQLState: %s)\n", e.what(), e.getErrorCode(), e.getSQLStateCStr());
         return;
 	} 
 	catch (std::runtime_error &e)
 	{
-		fprintf(stderr, "pvdump: MySQL ERR: %s", e.what());
+		fprintf(stderr, "pvdump: MySQL ERR: %s\n", e.what());
         return;
 	}
     catch(...)
     {
-		fprintf(stderr, "pvdump: MySQL ERR: FAILED TRYING TO WRITE TO THE ISIS PV DB");
+		fprintf(stderr, "pvdump: MySQL ERR: FAILED TRYING TO WRITE TO THE ISIS PV DB\n");
         return;
     }
 }
 
+static int sqlexec(const char *fileName)
+{
+	const char* mysqlHost = macEnvExpand("$(MYSQLHOST=localhost)");
+	int nlines = 0;
+	if (fileName == NULL || *fileName == '\0')
+	{
+        errlogSevPrintf(errlogMinor, "sqlexec: No filename given\n");
+		return -1;
+	}
+	try 
+	{
+        const clock_t begin_time = clock();
+	    mysql_driver = sql::mysql::get_driver_instance();
+	    std::auto_ptr< sql::Connection > con(mysql_driver->connect(mysqlHost, "iocdb", "$iocdb"));
+	    con->setAutoCommit(0); // we will create transactions ourselves via explicit calls to con->commit()
+	    con->setSchema("iocdb");
+	    std::auto_ptr< sql::Statement > stmt(con->createStatement());
+		std::fstream fs;
+		char buffer[256];
+		fs.open(fileName, std::ios::in);
+		fs.getline(buffer, sizeof(buffer));
+		while(fs.good())
+		{
+		    ++nlines;
+			stmt->execute(std::string(buffer));
+		    fs.getline(buffer, sizeof(buffer));
+		}
+		con->commit();
+        std::cout << "sqlexec: executing " << nlines << " lines of SQL from \"" << fileName << "\" took " << float( clock () - begin_time ) /  CLOCKS_PER_SEC << " seconds" << std::endl;
+    }
+	catch (sql::SQLException &e) 
+	{
+        errlogSevPrintf(errlogMinor, "sqlexec: MySQL ERR: %s (MySQL error code: %d, SQLState: %s)\n", e.what(), e.getErrorCode(), e.getSQLStateCStr());
+        return -1;
+	} 
+	catch (std::runtime_error &e)
+	{
+        errlogSevPrintf(errlogMinor, "sqlexec: MySQL ERR: %s\n", e.what());
+        return -1;
+	}
+    catch(...)
+    {
+        errlogSevPrintf(errlogMinor, "sqlexec: MySQL ERR: FAILED TRYING TO WRITE TO THE ISIS PV DB\n");
+        return -1;
+    }
+    return 0;
+}
+
 // EPICS iocsh shell commands 
 
-static const iocshArg initArg0 = { "dbname", iocshArgString };			///< The name of the database
-static const iocshArg initArg1 = { "iocname", iocshArgString };
+static const iocshArg pvdump_initArg0 = { "dbname", iocshArgString };			///< The name of the database
+static const iocshArg pvdump_initArg1 = { "iocname", iocshArgString };
 
-static const iocshArg * const initArgs[] = { &initArg0, &initArg1 };
+static const iocshArg sqlexec_initArg0 = { "filename", iocshArgString };			///< The name of the sql commands file
 
-static const iocshFuncDef initFuncDef = {"pvdump", sizeof(initArgs) / sizeof(iocshArg*), initArgs};
+static const iocshArg * const pvdump_initArgs[] = { &pvdump_initArg0, &pvdump_initArg1 };
+static const iocshArg * const sqlexec_initArgs[] = { &sqlexec_initArg0 };
 
-static void initCallFunc(const iocshArgBuf *args)
+static const iocshFuncDef pvdump_initFuncDef = {"pvdump", sizeof(pvdump_initArgs) / sizeof(iocshArg*), pvdump_initArgs};
+static const iocshFuncDef sqlexec_initFuncDef = {"sqlexec", sizeof(sqlexec_initArgs) / sizeof(iocshArg*), sqlexec_initArgs};
+
+static void pvdump_initCallFunc(const iocshArgBuf *args)
 {
     pvdump(args[0].sval, args[1].sval);
+}
+
+static void sqlexec_initCallFunc(const iocshArgBuf *args)
+{
+    sqlexec(args[0].sval);
 }
 
 extern "C" 
@@ -554,7 +612,8 @@ extern "C"
 
 static void pvdumpRegister(void)
 {
-    iocshRegister(&initFuncDef, initCallFunc);
+    iocshRegister(&pvdump_initFuncDef, pvdump_initCallFunc);
+    iocshRegister(&sqlexec_initFuncDef, sqlexec_initCallFunc);
 }
 
 epicsExportRegistrar(pvdumpRegister);
