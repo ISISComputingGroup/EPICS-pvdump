@@ -22,6 +22,7 @@
 #include "epicsString.h"
 #include "dbDefs.h"
 #include "epicsMutex.h"
+#include "epicsGuard.h"
 #include "dbBase.h"
 #include "dbStaticLib.h"
 #include "dbFldTypes.h"
@@ -32,19 +33,12 @@
 #include <epicsThread.h>
 #include <epicsString.h>
 #include <epicsTimer.h>
-#include <epicsMutex.h>
 #include <iocsh.h>
 #include <errlog.h>
 #include "macLib.h"
 #include "epicsExit.h"
 
 #include "utilities.h"
-
-// sqlite
-#include "sqlite3.h"
-#include "SqlDatabase.h"
-#include "SqlField.h"
-#include "SqlTable.h"
 
 // mysql
 #include <cppconn/driver.h>
@@ -111,6 +105,7 @@ struct PVInfo
 	PVInfo() { }
 };
 
+static epicsMutex pv_map_mutex;
 static std::map<std::string,PVInfo> pv_map;
 
 // based on iocsh dbl command from epics_base/src/db/dbTest.c 
@@ -214,23 +209,6 @@ static void dump_pvs(const char *precordTypename, const char *fields, std::map<s
         free((void *)fieldnames);
     }
     dbFinishEntry(pdbentry);
-}
-
-// return 0 on success, -1 on error
-static int execute_sql(sqlite3* db, const char* sql)
-{
-    char* errmsg = NULL;
-    int ret = sqlite3_exec(db, sql, NULL, NULL, &errmsg);
-	if (ret != SQLITE_OK)
-	{
-		printf("pvdump: sqlite3 error code : %d\n", ret);
-	}
-	if (errmsg != NULL)
-	{
-		printf("pvdump: sqlite3: %s\n", errmsg);
-	    sqlite3_free(errmsg);
-	}
-	return ret == SQLITE_OK ? 0 : -1;
 }
 
 static void pvdumpOnExit(void*);
@@ -345,13 +323,6 @@ static int dumpMysql(const std::map<std::string,PVInfo>& pv_map, int pid, const 
 	return 0;
 }
 
-// define funtion for this table as it is referenced in both pvdump and pvdumpOnExit
-static sql::Table* openIocrtTable(sql::Database& db)
-{
-    return sql::Table::createFromDefinition(db.getHandle(), "iocrt", 
-		    "iocname TEXT, pid INTEGER, start_time INTEGER, stop_time INTEGER, running INTEGER, exe_path TEXT");
-}
-
 static int pvdump(const char *dbName, const char *iocName)
 {
     static int first_call = 1;
@@ -387,86 +358,6 @@ static int pvdump(const char *dbName, const char *iocName)
 		return -1;
 	}
 
-#if 0 /* old sqlite */   
-    sql::Database db;      
-    if (NULL != dbName)
-	{
-	    db_name = dbName;
-	}
-	else
-	{
-		db_name = std::string(epicsRoot) + "/iocs.sq3";  // default database name
-	}
-	printf("pvdump: sqlite db name is \"%s\"\n", db_name.c_str()); 
-    
-    try 
-    {
-        db.open(db_name, 20000);
-		execute_sql(db.getHandle(), "PRAGMA foreign_keys = ON");
-		// createFromDefinition counts commas so do not include constraints (i.e. foreign keys) in definitions. Also omit any other stuff like "primary key" or "unique"
-		// as it can confus it.
-		sql::Table* table_iocs = sql::Table::createFromDefinition(db.getHandle(), "iocs",
-		    "iocname TEXT, dir TEXT, consoleport INT, logport INT, exe TEXT, cmd TEXT");
-		sql::Table* table_pvs = sql::Table::createFromDefinition(db.getHandle(), "pvs", "pvname TEXT, record_type TEXT, record_desc TEXT, iocname TEXT"); 
-		sql::Table* table_pvinfo = sql::Table::createFromDefinition(db.getHandle(), "pvinfo", "pvname TEXT, infoname TEXT, value TEXT");
-		sql::Table* table_iocrt = openIocrtTable(db);
-
-        db.transactionBegin();
-		table_iocrt->deleteRecords(std::string("iocname='")+ioc_name+"'"); // delete our old entry from iocrt
-		std::ostringstream oss;
-		oss << "pid=" << pid;
-		table_iocrt->deleteRecords(oss.str()); // remove any old record from iocrt with our current pid
-		table_pvs->deleteRecords(std::string("iocname='")+ioc_name+"'"); // remove our PVS from last time, this will also delete records from pvinfo due to foreign key cascade action
-        db.transactionCommit();
-		
-		sql::Record pvs_record(table_pvs->fields());
-		sql::Record iocrt_record(table_iocrt->fields());
-		sql::Record pvinfo_record(table_pvinfo->fields());
-		
-        iocrt_record.setString("iocname", ioc_name);
-        iocrt_record.setInteger("pid", pid);
-        iocrt_record.setTime("start_time", currtime);
-        iocrt_record.setTime("stop_time", 0);
-        iocrt_record.setInteger("running", 1);
-        iocrt_record.setString("exe_path", exepath);
-        
-        const clock_t begin_time = clock();
-
-        db.transactionBegin();
-		table_iocrt->addRecord(&iocrt_record);
-        for(std::map<std::string,PVInfo>::const_iterator it = pv_map.begin(); it != pv_map.end(); ++it)
-        {
-            pvs_record.setString("pvname", it->first);
-            pvs_record.setString("record_type", it->second.record_type);
-            pvs_record.setString("record_desc", it->second.record_desc);
-            pvs_record.setString("iocname", ioc_name);
-            table_pvs->addRecord(&pvs_record);
-			const std::map<std::string,std::string>& imap = it->second.info_fields;
-            for(std::map<std::string,std::string>::const_iterator itinf = imap.begin(); itinf != imap.end(); ++itinf)
-			{
-			    pvinfo_record.setString("pvname", it->first);
-			    pvinfo_record.setString("infoname", itinf->first);
-			    pvinfo_record.setString("value", itinf->second);
-                table_pvinfo->addRecord(&pvinfo_record);
-			}
-        }
-        db.transactionCommit();
-		delete table_iocrt, table_pvinfo, table_pvs, table_iocs;
-        std::cout << "pvdump: SQLite write took: " << float( clock () - begin_time ) /  CLOCKS_PER_SEC << std::endl;
-    }
-	catch(const std::exception& ex)
-	{
-		printf("pvdump: sqlite: ERROR: %s\n", ex.what());
-	}
-	catch(const sql::Exception& ex) // sql::Exception does not inherit from std::exception, so need to catch separately 
-	{
-		printf("pvdump: sqlite: sql ERROR: %s\n", ex.msg().c_str());
-	}
-    catch(...)
-    {
-        printf("pvdump: sqlite: ERROR: FAILED TRYING TO WRITE TO THE ISIS PV DB\n");
-    }
-#endif /* old sqlite */
 	int ret = dumpMysql(pv_map, pid, exepath);
 	if (ret == 0)
 	{
@@ -485,29 +376,6 @@ static void pvdumpOnExit(void*)
     time_t currtime;
     time(&currtime);
 	printf("pvdump: calling exit handler for ioc \"%s\"\n", ioc_name.c_str());
-#if 0 /* old sqlite */	 
-    sql::Database db;          
-    try 
-    {
-        db.open(db_name, 20000);
-	    std::ostringstream sql;
-		execute_sql(db.getHandle(), "PRAGMA foreign_keys = ON");
-		sql << "UPDATE iocrt SET pid=NULL, stop_time=" << currtime << ", running=0 WHERE iocname='" << ioc_name << "'";
-		execute_sql(db.getHandle(), sql.str().c_str());
-	}
-	catch(const std::exception& ex)
-	{
-		printf("pvdump: ERROR: %s\n", ex.what());
-	}
-	catch(const sql::Exception& ex) // sql::Exception does not inherit from std::exception, so need to catch separately 
-	{
-		printf("pvdump: sql ERROR: %s\n", ex.msg().c_str());
-	}
-    catch(...)
-    {
-        printf("pvdump: ERROR: FAILED TRYING TO WRITE TO THE ISIS PV DB\n");
-    }
-#endif /* old sqlite */
     const char* mysqlHost = macEnvExpand("$(MYSQLHOST=localhost)");
 	try
 	{
@@ -536,6 +404,7 @@ static void pvdumpOnExit(void*)
     }
 }
 
+// allow a file of SQL commands to be executed from the IOC command line
 static int sqlexec(const char *fileName)
 {
 	const char* mysqlHost = macEnvExpand("$(MYSQLHOST=localhost)");
@@ -618,15 +487,17 @@ static void pvdumpRegister(void)
 
 epicsExportRegistrar(pvdumpRegister);
 
-// these functions are for external non-IOC programs to add PVs e.g. c# channell access server
+// these functions are for external non-IOC programs to add PVs to the database e.g. a c# channel access server
 epicsShareFunc int pvdumpAddPV(const char* pvname, const char* record_type, const char* record_desc)
 {
+    epicsGuard<epicsMutex> _lock(pv_map_mutex);
     pv_map[pvname] = PVInfo(record_type, record_desc);
     return 0;
 }
 
 epicsShareFunc int pvdumpAddPVInfo(const char* pvname, const char* info_name, const char* info_value)
 {
+    epicsGuard<epicsMutex> _lock(pv_map_mutex);
     pv_map[pvname].info_fields[info_name] = info_value;
     return 0;
 }
