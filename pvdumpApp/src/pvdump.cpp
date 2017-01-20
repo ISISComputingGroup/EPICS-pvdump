@@ -222,6 +222,7 @@ static int dumpMysql(const std::map<std::string,PVInfo>& pv_map, int pid, const 
 {
 	unsigned long npv = 0, ninfo = 0, nmacro = 0;
 	const char* mysqlHost = macEnvExpand("$(MYSQLHOST=localhost)");
+#ifndef PVDUMP_DUMMY
 	try 
 	{
         const clock_t begin_time = clock();
@@ -320,6 +321,7 @@ static int dumpMysql(const std::map<std::string,PVInfo>& pv_map, int pid, const 
         errlogSevPrintf(errlogMinor, "pvdump: MySQL ERR: FAILED TRYING TO WRITE TO THE ISIS PV DB\n");
         return -1;
     }
+#endif /* PVDUMP_DUMMY */
 	return 0;
 }
 
@@ -357,7 +359,6 @@ static int pvdump(const char *dbName, const char *iocName)
         errlogSevPrintf(errlogMinor, "pvdump: ERROR: %s\n", ex.what());
 		return -1;
 	}
-
 	int ret = dumpMysql(pv_map, pid, exepath);
 	if (ret == 0)
 	{
@@ -377,6 +378,7 @@ static void pvdumpOnExit(void*)
     time(&currtime);
 	printf("pvdump: calling exit handler for ioc \"%s\"\n", ioc_name.c_str());
     const char* mysqlHost = macEnvExpand("$(MYSQLHOST=localhost)");
+#ifndef PVDUMP_DUMMY
 	try
 	{
 		std::auto_ptr< sql::Connection > con(mysql_driver->connect(mysqlHost, "iocdb", "$iocdb"));
@@ -402,6 +404,7 @@ static void pvdumpOnExit(void*)
 		fprintf(stderr, "pvdump: MySQL ERR: FAILED TRYING TO WRITE TO THE ISIS PV DB\n");
         return;
     }
+#endif /* PVDUMP_DUMMY */
 }
 
 // allow a file of SQL commands to be executed from the IOC command line
@@ -414,6 +417,7 @@ static int sqlexec(const char *fileName)
         errlogSevPrintf(errlogMinor, "sqlexec: No filename given\n");
 		return -1;
 	}
+#ifndef PVDUMP_DUMMY
 	try 
 	{
         const clock_t begin_time = clock();
@@ -450,6 +454,7 @@ static int sqlexec(const char *fileName)
         errlogSevPrintf(errlogMinor, "sqlexec: MySQL ERR: FAILED TRYING TO WRITE TO THE ISIS PV DB\n");
         return -1;
     }
+#endif /* PVDUMP_DUMMY */
     return 0;
 }
 
