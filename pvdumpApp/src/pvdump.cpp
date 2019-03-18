@@ -241,7 +241,7 @@ static int dumpMysql(const std::map<std::string,PVInfo>& pv_map, int pid, const 
 		stmt->execute(std::string("DELETE FROM pvs WHERE iocname='") + ioc_name + "' ORDER BY pvname"); // remove our PVS from last time, this will also delete records from pvinfo due to foreign key cascade action
 		con->commit();
 		
-		std::auto_ptr< sql::PreparedStatement > iocrt_stmt(con->prepareStatement("INSERT IGNORE INTO iocrt (iocname, pid, start_time, stop_time, running, exe_path) VALUES (?,?,NOW(),'0000-00-00 00:00:00',?,?)"));
+		std::auto_ptr< sql::PreparedStatement > iocrt_stmt(con->prepareStatement("INSERT INTO iocrt (iocname, pid, start_time, stop_time, running, exe_path) VALUES (?,?,NOW(),'1970-01-01 00:00:01',?,?)"));
 		iocrt_stmt->setString(1,ioc_name);
 		iocrt_stmt->setInt(2,pid);
 		iocrt_stmt->setInt(3,1);
