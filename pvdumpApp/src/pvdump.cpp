@@ -423,7 +423,8 @@ static int sqlexec(const char *fileName)
         const clock_t begin_time = clock();
 	    mysql_driver = sql::mysql::get_driver_instance();
 	    std::auto_ptr< sql::Connection > con(mysql_driver->connect(mysqlHost, "iocdb", "$iocdb"));
-	    con->setAutoCommit(0); // we will create transactions ourselves via explicit calls to con->commit()
+        // We don't call con->setAutoCommit(0) so any transactions must be explicitly specified as part of the file
+        // otherwise each line will be executed as it is read
 	    con->setSchema("iocdb");
 	    std::auto_ptr< sql::Statement > stmt(con->createStatement());
 		std::fstream fs;
@@ -436,7 +437,6 @@ static int sqlexec(const char *fileName)
 			stmt->execute(std::string(buffer));
 		    fs.getline(buffer, sizeof(buffer));
 		}
-		con->commit();
         std::cout << "sqlexec: executing " << nlines << " lines of SQL from \"" << fileName << "\" took " << float( clock () - begin_time ) /  CLOCKS_PER_SEC << " seconds" << std::endl;
     }
 	catch (sql::SQLException &e) 
