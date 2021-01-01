@@ -214,7 +214,7 @@ static void dump_pvs(const char *precordTypename, const char *fields, std::map<s
 static void pvdumpOnExit(void*);
 
 static std::string ioc_name, db_name;    
-static sql::Driver * mysql_driver;
+static sql::Driver* mysql_driver = NULL;
 
 static const int MAX_MACRO_VAL_LENGTH = 100; // should agree with length of macroval in iocenv MySQL table (iocdb_mysql_schema.txt)
 
@@ -226,7 +226,10 @@ static int dumpMysql(const std::map<std::string,PVInfo>& pv_map, int pid, const 
 	try 
 	{
         const clock_t begin_time = clock();
-	    mysql_driver = sql::mysql::get_driver_instance();
+        if (mysql_driver == NULL)
+        {
+	        mysql_driver = sql::mysql::get_driver_instance();
+        }
 	    std::auto_ptr< sql::Connection > con(mysql_driver->connect(mysqlHost, "iocdb", "$iocdb"));
         // the ORDER BY is to make deletes happen in a consistent primary key order, and so try and avoid deadlocks
         // but it may not be completely right. Additional indexes have also been added to database tables.
@@ -381,6 +384,10 @@ static void pvdumpOnExit(void*)
 #ifndef PVDUMP_DUMMY
 	try
 	{
+        if (mysql_driver == NULL)
+        {
+	        mysql_driver = sql::mysql::get_driver_instance();
+        }
 		std::auto_ptr< sql::Connection > con(mysql_driver->connect(mysqlHost, "iocdb", "$iocdb"));
 		std::auto_ptr< sql::Statement > stmt(con->createStatement());
 		con->setSchema("iocdb");
@@ -408,6 +415,7 @@ static void pvdumpOnExit(void*)
 }
 
 // allow a file of SQL commands to be executed from the IOC command line
+// all lines are executed in a single transaction
 static int sqlexec(const char *fileName)
 {
 	const char* mysqlHost = macEnvExpand("$(MYSQLHOST=localhost)");
@@ -421,10 +429,12 @@ static int sqlexec(const char *fileName)
 	try 
 	{
         const clock_t begin_time = clock();
-	    mysql_driver = sql::mysql::get_driver_instance();
+        if (mysql_driver == NULL)
+        {
+	        mysql_driver = sql::mysql::get_driver_instance();
+        }
 	    std::auto_ptr< sql::Connection > con(mysql_driver->connect(mysqlHost, "iocdb", "$iocdb"));
-        // We don't call con->setAutoCommit(0) so any transactions must be explicitly specified as part of the file
-        // otherwise each line will be executed as it is read
+	    con->setAutoCommit(0); // we will create transactions ourselves via explicit calls to con->commit()
 	    con->setSchema("iocdb");
 	    std::auto_ptr< sql::Statement > stmt(con->createStatement());
 		std::fstream fs;
@@ -437,6 +447,7 @@ static int sqlexec(const char *fileName)
 			stmt->execute(std::string(buffer));
 		    fs.getline(buffer, sizeof(buffer));
 		}
+        con->commit();
         std::cout << "sqlexec: executing " << nlines << " lines of SQL from \"" << fileName << "\" took " << float( clock () - begin_time ) /  CLOCKS_PER_SEC << " seconds" << std::endl;
     }
 	catch (sql::SQLException &e) 
