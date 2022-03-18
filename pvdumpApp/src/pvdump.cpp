@@ -282,7 +282,7 @@ static void dumpMysqlThread(void* arg)
 				if ( (s.size() - pos) < MAX_MACRO_VAL_LENGTH )  // ignore things with long values like PATH
 				{
 		            iocenv_stmt->setString(2, s.substr(0, pos).c_str()); // name
-		            iocenv_stmt->setString(3, s.substr(pos).c_str()); // value
+		            iocenv_stmt->setString(3, s.substr(pos + 1).c_str()); // value
 			        iocenv_stmt->executeUpdate();
 				    ++nmacro;
 				}
