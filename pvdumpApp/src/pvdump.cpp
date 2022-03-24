@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <iostream>
 #include <map>
+#include <list>
 #include <string>
 #include <time.h>
 #include <sstream>
@@ -107,6 +108,7 @@ struct PVInfo
 
 static epicsMutex pv_map_mutex;
 static std::map<std::string,PVInfo> pv_map;
+static std::list<std::string> environ_list;
 
 // based on iocsh dbl command from epics_base/src/db/dbTest.c 
 // return an std map, currently key is pv and value is recordType (if that is defined)
@@ -218,40 +220,27 @@ static sql::Driver* mysql_driver = NULL;
 
 static const int MAX_MACRO_VAL_LENGTH = 100; // should agree with length of macroval in iocenv MySQL table (iocdb_mysql_schema.txt)
 
-static int dumpMysql(const std::map<std::string,PVInfo>& pv_map, int pid, const std::string& exepath)
+struct MysqlThreadArgs
+{
+    const std::map<std::string,PVInfo>& pvm;
+    const std::list<std::string>& evl;
+    sql::Connection* con;
+    MysqlThreadArgs(const std::map<std::string,PVInfo>& pvm_,
+                    const std::list<std::string>& evl_,
+                    sql::Connection* con_) : pvm(pvm_), evl(evl_), con(con_) { }
+    ~MysqlThreadArgs() { delete con; }
+};
+
+static void dumpMysqlThread(void* arg)
 {
 	unsigned long npv = 0, ninfo = 0, nmacro = 0;
 	const char* mysqlHost = macEnvExpand("$(MYSQLHOST=localhost)");
+    MysqlThreadArgs* marg = (MysqlThreadArgs*)arg;
+    sql::Connection* con = marg->con;
 #ifndef PVDUMP_DUMMY
 	try 
 	{
         const clock_t begin_time = clock();
-        if (mysql_driver == NULL)
-        {
-	        mysql_driver = sql::mysql::get_driver_instance();
-        }
-	    std::auto_ptr< sql::Connection > con(mysql_driver->connect(mysqlHost, "iocdb", "$iocdb"));
-        // the ORDER BY is to make deletes happen in a consistent primary key order, and so try and avoid deadlocks
-        // but it may not be completely right. Additional indexes have also been added to database tables.
-	    con->setAutoCommit(0); // we will create transactions ourselves via explicit calls to con->commit()
-	    con->setSchema("iocdb");
-
-	    std::auto_ptr< sql::Statement > stmt(con->createStatement());
-		stmt->execute(std::string("DELETE FROM iocenv WHERE iocname='") + ioc_name + "' ORDER BY iocname,macroname");
-		std::ostringstream sql;
-		sql << "DELETE FROM iocrt WHERE iocname='" << ioc_name << "' OR pid=" << pid << " ORDER BY iocname"; // remove any old record from iocrt with our current pid or name
-		stmt->execute(sql.str());
-		stmt->execute(std::string("DELETE FROM pvs WHERE iocname='") + ioc_name + "' ORDER BY pvname"); // remove our PVS from last time, this will also delete records from pvinfo due to foreign key cascade action
-		con->commit();
-		
-		std::auto_ptr< sql::PreparedStatement > iocrt_stmt(con->prepareStatement("INSERT INTO iocrt (iocname, pid, start_time, stop_time, running, exe_path) VALUES (?,?,NOW(),'1970-01-01 00:00:01',?,?)"));
-		iocrt_stmt->setString(1,ioc_name);
-		iocrt_stmt->setInt(2,pid);
-		iocrt_stmt->setInt(3,1);
-		iocrt_stmt->setString(4,exepath);
-		iocrt_stmt->executeUpdate();
-		con->commit();
-
         // use DELETE and INSERT on pvs table as we may have the same pv name from a different IOC e.g. CAENSIM and CAEN
 		std::auto_ptr< sql::PreparedStatement > pvs_dstmt(con->prepareStatement("DELETE FROM pvs WHERE pvname=?"));
         for(std::map<std::string,PVInfo>::const_iterator it = pv_map.begin(); it != pv_map.end(); ++it)
@@ -283,31 +272,86 @@ static int dumpMysql(const std::map<std::string,PVInfo>& pv_map, int pid, const 
         }
 		con->commit();
 
-        char **sp;
-		char *envbit1, *envbit2;
 		std::auto_ptr< sql::PreparedStatement > iocenv_stmt(con->prepareStatement("INSERT INTO iocenv (iocname, macroname, macroval) VALUES (?,?,?)"));
 		iocenv_stmt->setString(1, ioc_name);
-        for (sp = environ ; (sp != NULL) && (*sp != NULL) ; ++sp)
-		{
-		    envbit1 = strdup(*sp);   // name=value string  
-			envbit2 = strchr(envbit1, '='); 
-			if (NULL != envbit2)
-			{
-			    envbit1[envbit2-envbit1] = '\0';  // NULL out '='
-			    ++envbit2;
-				if (strlen(envbit2) < MAX_MACRO_VAL_LENGTH)  // ignore things with long values like PATH
+        for(const std::string& s : environ_list)
+        {
+			size_t pos = s.find('=');
+            if (pos != std::string::npos)
+            {
+				if ( (s.size() - pos) < MAX_MACRO_VAL_LENGTH )  // ignore things with long values like PATH
 				{
-		            iocenv_stmt->setString(2, envbit1); // name
-		            iocenv_stmt->setString(3, envbit2); // value
+		            iocenv_stmt->setString(2, s.substr(0, pos).c_str()); // name
+		            iocenv_stmt->setString(3, s.substr(pos + 1).c_str()); // value
 			        iocenv_stmt->executeUpdate();
 				    ++nmacro;
 				}
 			}
-			free(envbit1);
 		}
 		con->commit();
 
         std::cout << "pvdump: MySQL write of " << npv << " PVs with " << ninfo << " info entries, plus " << nmacro << " macros took " << float( clock () - begin_time ) /  CLOCKS_PER_SEC << " seconds" << std::endl;
+        delete marg;
+    }
+	catch (sql::SQLException &e) 
+	{
+        errlogSevPrintf(errlogMinor, "pvdump: MySQL ERR: %s (MySQL error code: %d, SQLState: %s)\n", e.what(), e.getErrorCode(), e.getSQLStateCStr());
+	} 
+	catch (std::runtime_error &e)
+	{
+        errlogSevPrintf(errlogMinor, "pvdump: MySQL ERR: %s\n", e.what());
+	}
+    catch(...)
+    {
+        errlogSevPrintf(errlogMinor, "pvdump: MySQL ERR: FAILED TRYING TO WRITE TO THE ISIS PV DB\n");
+    }
+#endif /* PVDUMP_DUMMY */
+}
+
+
+static int dumpMysql(const std::map<std::string,PVInfo>& pv_map, int pid, const std::string& exepath)
+{
+	unsigned long npv = 0, ninfo = 0, nmacro = 0;
+	const char* mysqlHost = macEnvExpand("$(MYSQLHOST=localhost)");
+#ifndef PVDUMP_DUMMY
+	try 
+	{
+        const clock_t begin_time = clock();
+        if (mysql_driver == NULL)
+        {
+	        mysql_driver = sql::mysql::get_driver_instance();
+        }
+	    sql::Connection* con = mysql_driver->connect(mysqlHost, "iocdb", "$iocdb");
+        // the ORDER BY is to make deletes happen in a consistent primary key order, and so try and avoid deadlocks
+        // but it may not be completely right. Additional indexes have also been added to database tables.
+	    con->setAutoCommit(0); // we will create transactions ourselves via explicit calls to con->commit()
+	    con->setSchema("iocdb");
+        
+        environ_list.clear();
+        for (char** sp = environ ; (sp != NULL) && (*sp != NULL) ; ++sp)
+		{
+		    environ_list.push_back(*sp); // name=value string
+        }
+        
+	    std::auto_ptr< sql::Statement > stmt(con->createStatement());
+		stmt->execute(std::string("DELETE FROM iocenv WHERE iocname='") + ioc_name + "' ORDER BY iocname,macroname");
+		std::ostringstream sql;
+		sql << "DELETE FROM iocrt WHERE iocname='" << ioc_name << "' OR pid=" << pid << " ORDER BY iocname"; // remove any old record from iocrt with our current pid or name
+		stmt->execute(sql.str());
+		stmt->execute(std::string("DELETE FROM pvs WHERE iocname='") + ioc_name + "' ORDER BY pvname"); // remove our PVS from last time, this will also delete records from pvinfo due to foreign key cascade action
+		con->commit();
+		
+		std::auto_ptr< sql::PreparedStatement > iocrt_stmt(con->prepareStatement("INSERT INTO iocrt (iocname, pid, start_time, stop_time, running, exe_path) VALUES (?,?,NOW(),'1970-01-01 00:00:01',?,?)"));
+		iocrt_stmt->setString(1,ioc_name);
+		iocrt_stmt->setInt(2,pid);
+		iocrt_stmt->setInt(3,1);
+		iocrt_stmt->setString(4,exepath);
+		iocrt_stmt->executeUpdate();
+		con->commit();
+        MysqlThreadArgs* margs = new MysqlThreadArgs(pv_map, environ_list, con);
+        epicsThreadCreate("pvdump", epicsThreadPriorityMedium, epicsThreadStackMedium, 
+                           dumpMysqlThread, margs);
+        std::cout << "pvdump: MySQL setup took " << float( clock () - begin_time ) /  CLOCKS_PER_SEC << " seconds" << std::endl;
     }
 	catch (sql::SQLException &e) 
 	{
