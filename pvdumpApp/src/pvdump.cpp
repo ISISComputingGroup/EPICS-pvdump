@@ -219,6 +219,8 @@ static std::string ioc_name, db_name;
 static sql::Driver* mysql_driver = NULL;
 
 static const int MAX_MACRO_VAL_LENGTH = 100; // should agree with length of macroval in iocenv MySQL table (iocdb_mysql_schema.txt)
+static const int MAX_INFO_VAL_LENGTH = 100; // should agree with length of value in pvinfo MySQL table (iocdb_mysql_schema.txt)
+static const int MAX_IOC_PATH_LENGTH = 100; // should agree with length of exe_path in iocrt and exe/dir in iocs MySQL table (iocdb_mysql_schema.txt)
 
 struct MysqlThreadArgs
 {
@@ -266,7 +268,7 @@ static void dumpMysqlThread(void* arg)
 				++ninfo;
 			    pvinfo_stmt->setString(1, it->first);
 			    pvinfo_stmt->setString(2, itinf->first);
-			    pvinfo_stmt->setString(3, itinf->second);
+			    pvinfo_stmt->setString(3, itinf->second.substr(0, MAX_INFO_VAL_LENGTH));
 				pvinfo_stmt->executeUpdate();
 			}
         }
@@ -345,7 +347,21 @@ static int dumpMysql(const std::map<std::string,PVInfo>& pv_map, int pid, const 
 		iocrt_stmt->setString(1,ioc_name);
 		iocrt_stmt->setInt(2,pid);
 		iocrt_stmt->setInt(3,1);
-		iocrt_stmt->setString(4,exepath);
+        if (exepath.size() > MAX_IOC_PATH_LENGTH) {
+#ifdef _WIN32
+            char buffer[MAX_PATH + 1];
+            if (GetShortPathName(exepath.c_str(), buffer, MAX_PATH) != 0) {
+                buffer[MAX_IOC_PATH_LENGTH] = '\0';
+		        iocrt_stmt->setString(4,buffer);
+            } else {
+		        iocrt_stmt->setString(4,exepath.substr(0, MAX_IOC_PATH_LENGTH));
+            }
+#else
+		    iocrt_stmt->setString(4,exepath.substr(0, MAX_IOC_PATH_LENGTH));
+#endif /* _WIN32 */
+        } else {
+		    iocrt_stmt->setString(4,exepath);
+        }
 		iocrt_stmt->executeUpdate();
 		con->commit();
         MysqlThreadArgs* margs = new MysqlThreadArgs(pv_map, environ_list, con);
