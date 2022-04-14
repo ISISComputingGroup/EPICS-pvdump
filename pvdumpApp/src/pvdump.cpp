@@ -226,23 +226,26 @@ struct MysqlThreadArgs
 {
     const std::map<std::string,PVInfo>& pvm;
     const std::list<std::string>& evl;
-    sql::Connection* con;
+    std::string mysql_host;
     MysqlThreadArgs(const std::map<std::string,PVInfo>& pvm_,
                     const std::list<std::string>& evl_,
-                    sql::Connection* con_) : pvm(pvm_), evl(evl_), con(con_) { }
-    ~MysqlThreadArgs() { delete con; }
+                    const std::string& mysql_host_) : pvm(pvm_), evl(evl_), mysql_host(mysql_host_) { }
 };
 
 static void dumpMysqlThread(void* arg)
 {
 	unsigned long npv = 0, ninfo = 0, nmacro = 0;
-	const char* mysqlHost = macEnvExpand("$(MYSQLHOST=localhost)");
     MysqlThreadArgs* marg = (MysqlThreadArgs*)arg;
-    sql::Connection* con = marg->con;
+	const char* mysqlHost = marg->mysql_host.c_str();
 #ifndef PVDUMP_DUMMY
 	try 
 	{
         const clock_t begin_time = clock();
+        std::auto_ptr< sql::Connection > con(mysql_driver->connect(mysqlHost, "iocdb", "$iocdb"));
+    // the ORDER BY is to make deletes happen in a consistent primary key order, and so try and avoid deadlocks
+    // but it may not be completely right. Additional indexes have also been added to database tables.
+	    con->setAutoCommit(0); // we will create transactions ourselves via explicit calls to con->commit()
+	    con->setSchema("iocdb");
         // use DELETE and INSERT on pvs table as we may have the same pv name from a different IOC e.g. CAENSIM and CAEN
 		std::auto_ptr< sql::PreparedStatement > pvs_dstmt(con->prepareStatement("DELETE FROM pvs WHERE pvname=?"));
         for(std::map<std::string,PVInfo>::const_iterator it = pv_map.begin(); it != pv_map.end(); ++it)
@@ -364,7 +367,9 @@ static int dumpMysql(const std::map<std::string,PVInfo>& pv_map, int pid, const 
         }
 		iocrt_stmt->executeUpdate();
 		con->commit();
-        MysqlThreadArgs* margs = new MysqlThreadArgs(pv_map, environ_list, con);
+        delete con;
+        epicsThreadSleep(0.1);
+        MysqlThreadArgs* margs = new MysqlThreadArgs(pv_map, environ_list, mysqlHost);
         epicsThreadCreate("pvdump", epicsThreadPriorityMedium, epicsThreadStackMedium, 
                            dumpMysqlThread, margs);
         std::cout << "pvdump: MySQL setup took " << float( clock () - begin_time ) /  CLOCKS_PER_SEC << " seconds" << std::endl;
