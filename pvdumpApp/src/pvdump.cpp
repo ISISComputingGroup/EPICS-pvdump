@@ -279,8 +279,9 @@ static void dumpMysqlThread(void* arg)
 
 		std::auto_ptr< sql::PreparedStatement > iocenv_stmt(con->prepareStatement("INSERT INTO iocenv (iocname, macroname, macroval) VALUES (?,?,?)"));
 		iocenv_stmt->setString(1, ioc_name);
-        for(const std::string& s : environ_list)
+        for(std::list<std::string>::const_iterator it = environ_list.begin(); it != environ_list.end(); ++it)
         {
+            const std::string& s = *it;
 			size_t pos = s.find('=');
             if (pos != std::string::npos)
             {
