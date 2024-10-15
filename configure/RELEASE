@@ -3,6 +3,7 @@ BOOST=$(EPICS_ROOT)/libraries/master/boost
 MYSQL=$(SUPPORT)/MySQL/master
 PCRE=$(SUPPORT)/pcre/master
 SQLITE=$(SUPPORT)/sqlite/master
+OPENSSL=$(SUPPORT)/OpenSSL/master
 UTILITIES=$(SUPPORT)/utilities/master
 # END OF AUTO GENERATED DEPENDENCIES
 
