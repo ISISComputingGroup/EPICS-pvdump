@@ -27,7 +27,7 @@ pvdump_dummy_LIBS += easySQLite sqlite utilities $(EPICS_BASE_IOC_LIBS)
 ifeq ($(SHARED_LIBRARIES),YES)
 USR_CPPFLAGS_WIN32 += -DSQLITE_API=__declspec(dllimport)
 else
-#USR_CXXFLAGS += -DCPPCONN_LIB_BUILD
+USR_CXXFLAGS += -DSTATIC_CONCPP
 endif
 
 #===========================
