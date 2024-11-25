@@ -13,3 +13,4 @@ runIOC.sh
 relPaths.sh
 .project
 NULL
+dllCopy.bat
