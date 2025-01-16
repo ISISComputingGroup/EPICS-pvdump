@@ -51,6 +51,9 @@ int SQLException::getErrorCode()
 SqlPreparedStatement::SqlPreparedStatement(SQL_CONNECTION conn, const std::string& comm)
 {
     m_pstatement = pvdump_mysql_prepareStatement(conn, comm.c_str());
+	if (m_pstatement == nullptr) {
+		throw std::runtime_error("PvdumpMysql: cannot create prepared statment");
+	}
 }
 
 SqlPreparedStatement::~SqlPreparedStatement()
@@ -76,6 +79,9 @@ void SqlPreparedStatement::executeUpdate()
 SqlStatement::SqlStatement(SQL_CONNECTION conn)
 {
     m_statement = pvdump_mysql_createStatement(conn);
+	if (m_statement == nullptr) {
+		throw std::runtime_error("PvdumpMysql: cannot create statment");
+	}
 }
 
 SqlStatement::~SqlStatement()
@@ -91,6 +97,9 @@ void SqlStatement::execute(const std::string& comm)
 SqlConnection::SqlConnection(SQL_DRIVER driver, const char* mysqlHost, const char* db, const char* pw)
 {
     m_connection = pvdump_mysql_connect(driver, mysqlHost, db, pw);
+	if (m_connection == nullptr) {
+		throw std::runtime_error(std::string("PvdumpMysql: cannot connect to ") + mysqlHost);
+	}
 }
 
 SqlConnection::~SqlConnection()
@@ -134,7 +143,10 @@ SqlDriver* SqlDriver::get_driver_instance()
 
 SqlDriver::SqlDriver()
 {
-    m_driver = pvdump_mysql_get_driver_instance();    
+    m_driver = pvdump_mysql_get_driver_instance();
+	if (m_driver == nullptr) {
+		throw std::runtime_error("PvdumpMysql: cannot create driver");
+	}
 }
 
 SqlConnection* SqlDriver::connect(const char* mysqlHost, const char* db, const char* pw)

@@ -36,17 +36,17 @@
 #endif
 
 #define TRAP_ERROR \
-    catch (sql::SQLException &e)  \
+    catch (const sql::SQLException &e)  \
 	{  \
-        printf("MySQL ERR: %s (MySQL error code: %d, SQLState: %s)\n", e.what(), e.getErrorCode(), e.getSQLStateCStr()); \
+        fprintf(stderr, "MySQL ERR: %s (MySQL error code: %d, SQLState: %s)\n", e.what(), e.getErrorCode(), e.getSQLStateCStr()); \
 	} \
-	catch (std::runtime_error &e) \
+	catch (const std::runtime_error &e) \
 	{ \
-        printf("MySQL ERR: %s\n", e.what()); \
+        fprintf(stderr, "MySQL ERR: %s\n", e.what()); \
 	} \
     catch(...) \
     { \
-        printf("MySQL ERR: FAILED\n"); \
+        fprintf(stderr, "MySQL ERR: FAILED\n"); \
     }
 
 SQL_CONNECTION pvdump_mysql_connect(SQL_DRIVER driver, const char* host, const char* db, const char* pw)
@@ -74,7 +74,8 @@ int pvdump_mysql_conn_setAutoCommit(SQL_CONNECTION conn, int value)
 {
     try {
         sql::Connection* con = reinterpret_cast<sql::Connection*>(conn);
-        con->setAutoCommit(value);    
+        con->setAutoCommit(value);
+		return 0;
     }
     TRAP_ERROR;
     return -1;
@@ -85,6 +86,7 @@ int pvdump_mysql_conn_setSchema(SQL_CONNECTION conn, const char* schema)
     try {
         sql::Connection* con = reinterpret_cast<sql::Connection*>(conn);
         con->setSchema(schema);
+		return 0;
     }
     TRAP_ERROR;
     return -1;

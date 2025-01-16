@@ -23,7 +23,9 @@ pvdump_dummy_SRCS += pvdump_dummy.cpp
 pvdump_dummy_CPPFLAGS += -DPVDUMP_DUMMY=1
 
 pvdump_mysql_LIBS += $(MYSQLLIB)
+pvdump_LDFLAGS_WIN32 += /delayload:pvdump_mysql.dll
 pvdump_LIBS += easySQLite sqlite utilities pvdump_mysql $(EPICS_BASE_IOC_LIBS)
+pvdump_SYS_LIBS_WIN32 += delayimp
 pvdump_dummy_LIBS += easySQLite sqlite utilities $(EPICS_BASE_IOC_LIBS)
 
 ifeq ($(SHARED_LIBRARIES),YES)
