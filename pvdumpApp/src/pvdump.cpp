@@ -41,7 +41,17 @@
 
 #include "utilities.h"
 
-#include "pvdump_mysql.h"
+// mysql
+#include <cppconn/driver.h>
+#include <cppconn/exception.h>
+#include <cppconn/warning.h>
+#include <cppconn/metadata.h>
+#include <cppconn/prepared_statement.h>
+#include <cppconn/resultset.h>
+#include <cppconn/resultset_metadata.h>
+#include <cppconn/statement.h>
+#include "mysql_driver.h"
+#include "mysql_connection.h"
 
 #ifdef _WIN32
 #include <process.h>
@@ -206,7 +216,7 @@ static void dump_pvs(const char *precordTypename, const char *fields, std::map<s
 static void pvdumpOnExit(void*);
 
 static std::string ioc_name, db_name;    
-static SqlDriver* mysql_driver = NULL;
+static sql::Driver* mysql_driver = NULL;
 
 static const int MAX_MACRO_VAL_LENGTH = 100; // should agree with length of macroval in iocenv MySQL table (iocdb_mysql_schema.txt)
 static const int MAX_INFO_VAL_LENGTH = 100; // should agree with length of value in pvinfo MySQL table (iocdb_mysql_schema.txt)
@@ -231,13 +241,13 @@ static void dumpMysqlThread(void* arg)
 	try 
 	{
         const clock_t begin_time = clock();
-        std::auto_ptr< SqlConnection > con(mysql_driver->connect(mysqlHost, "iocdb", "$iocdb"));
+        std::auto_ptr< sql::Connection > con(mysql_driver->connect(mysqlHost, "iocdb", "$iocdb"));
     // the ORDER BY is to make deletes happen in a consistent primary key order, and so try and avoid deadlocks
     // but it may not be completely right. Additional indexes have also been added to database tables.
 	    con->setAutoCommit(0); // we will create transactions ourselves via explicit calls to con->commit()
 	    con->setSchema("iocdb");
         // use DELETE and INSERT on pvs table as we may have the same pv name from a different IOC e.g. CAENSIM and CAEN
-		std::auto_ptr< SqlPreparedStatement > pvs_dstmt(con->prepareStatement("DELETE FROM pvs WHERE pvname=?"));
+		std::auto_ptr< sql::PreparedStatement > pvs_dstmt(con->prepareStatement("DELETE FROM pvs WHERE pvname=?"));
         for(std::map<std::string,PVInfo>::const_iterator it = pv_map.begin(); it != pv_map.end(); ++it)
         {
             pvs_dstmt->setString(1, it->first);
@@ -245,8 +255,8 @@ static void dumpMysqlThread(void* arg)
         }
 		con->commit();
         
-		std::auto_ptr< SqlPreparedStatement > pvs_stmt(con->prepareStatement("INSERT INTO pvs (pvname, record_type, record_desc, iocname) VALUES (?,?,?,?)"));
-		std::auto_ptr< SqlPreparedStatement > pvinfo_stmt(con->prepareStatement("INSERT INTO pvinfo (pvname, infoname, value) VALUES (?,?,?)"));
+		std::auto_ptr< sql::PreparedStatement > pvs_stmt(con->prepareStatement("INSERT INTO pvs (pvname, record_type, record_desc, iocname) VALUES (?,?,?,?)"));
+		std::auto_ptr< sql::PreparedStatement > pvinfo_stmt(con->prepareStatement("INSERT INTO pvinfo (pvname, infoname, value) VALUES (?,?,?)"));
         for(std::map<std::string,PVInfo>::const_iterator it = pv_map.begin(); it != pv_map.end(); ++it)
         {
 			++npv;
@@ -267,7 +277,7 @@ static void dumpMysqlThread(void* arg)
         }
 		con->commit();
 
-		std::auto_ptr< SqlPreparedStatement > iocenv_stmt(con->prepareStatement("INSERT INTO iocenv (iocname, macroname, macroval) VALUES (?,?,?)"));
+		std::auto_ptr< sql::PreparedStatement > iocenv_stmt(con->prepareStatement("INSERT INTO iocenv (iocname, macroname, macroval) VALUES (?,?,?)"));
 		iocenv_stmt->setString(1, ioc_name);
         for(std::list<std::string>::const_iterator it = environ_list.begin(); it != environ_list.end(); ++it)
         {
@@ -289,7 +299,7 @@ static void dumpMysqlThread(void* arg)
         std::cout << "pvdump: MySQL write of " << npv << " PVs with " << ninfo << " info entries, plus " << nmacro << " macros took " << float( clock () - begin_time ) /  CLOCKS_PER_SEC << " seconds" << std::endl;
         delete marg;
     }
-	catch (SQLException &e) 
+	catch (sql::SQLException &e) 
 	{
         errlogSevPrintf(errlogMinor, "pvdump: MySQL ERR: %s (MySQL error code: %d, SQLState: %s)\n", e.what(), e.getErrorCode(), e.getSQLStateCStr());
 	} 
@@ -315,9 +325,9 @@ static int dumpMysql(const std::map<std::string,PVInfo>& pv_map, int pid, const 
         const clock_t begin_time = clock();
         if (mysql_driver == NULL)
         {
-	        mysql_driver = SqlDriver::get_driver_instance();
+	        mysql_driver = sql::mysql::get_driver_instance();
         }
-	    SqlConnection* con = mysql_driver->connect(mysqlHost, "iocdb", "$iocdb");
+	    sql::Connection* con = mysql_driver->connect(mysqlHost, "iocdb", "$iocdb");
         // the ORDER BY is to make deletes happen in a consistent primary key order, and so try and avoid deadlocks
         // but it may not be completely right. Additional indexes have also been added to database tables.
 	    con->setAutoCommit(0); // we will create transactions ourselves via explicit calls to con->commit()
@@ -329,7 +339,7 @@ static int dumpMysql(const std::map<std::string,PVInfo>& pv_map, int pid, const 
 		    environ_list.push_back(*sp); // name=value string
         }
         
-	    std::auto_ptr< SqlStatement > stmt(con->createStatement());
+	    std::auto_ptr< sql::Statement > stmt(con->createStatement());
 		stmt->execute(std::string("DELETE FROM iocenv WHERE iocname='") + ioc_name + "' ORDER BY iocname,macroname");
 		std::ostringstream sql;
 		sql << "DELETE FROM iocrt WHERE iocname='" << ioc_name << "' OR pid=" << pid << " ORDER BY iocname"; // remove any old record from iocrt with our current pid or name
@@ -337,7 +347,7 @@ static int dumpMysql(const std::map<std::string,PVInfo>& pv_map, int pid, const 
 		stmt->execute(std::string("DELETE FROM pvs WHERE iocname='") + ioc_name + "' ORDER BY pvname"); // remove our PVS from last time, this will also delete records from pvinfo due to foreign key cascade action
 		con->commit();
 		
-		std::auto_ptr< SqlPreparedStatement > iocrt_stmt(con->prepareStatement("INSERT INTO iocrt (iocname, pid, start_time, stop_time, running, exe_path) VALUES (?,?,NOW(),'1970-01-01 00:00:01',?,?)"));
+		std::auto_ptr< sql::PreparedStatement > iocrt_stmt(con->prepareStatement("INSERT INTO iocrt (iocname, pid, start_time, stop_time, running, exe_path) VALUES (?,?,NOW(),'1970-01-01 00:00:01',?,?)"));
 		iocrt_stmt->setString(1,ioc_name);
 		iocrt_stmt->setInt(2,pid);
 		iocrt_stmt->setInt(3,1);
@@ -365,7 +375,7 @@ static int dumpMysql(const std::map<std::string,PVInfo>& pv_map, int pid, const 
                            dumpMysqlThread, margs);
         std::cout << "pvdump: MySQL setup took " << float( clock () - begin_time ) /  CLOCKS_PER_SEC << " seconds" << std::endl;
     }
-	catch (SQLException &e) 
+	catch (sql::SQLException &e) 
 	{
         errlogSevPrintf(errlogMinor, "pvdump: MySQL ERR: %s (MySQL error code: %d, SQLState: %s)\n", e.what(), e.getErrorCode(), e.getSQLStateCStr());
         return -1;
@@ -442,17 +452,17 @@ static void pvdumpOnExit(void*)
 	{
         if (mysql_driver == NULL)
         {
-	        mysql_driver = SqlDriver::get_driver_instance();
+	        mysql_driver = sql::mysql::get_driver_instance();
         }
-		std::auto_ptr< SqlConnection > con(mysql_driver->connect(mysqlHost, "iocdb", "$iocdb"));
-		std::auto_ptr< SqlStatement > stmt(con->createStatement());
+		std::auto_ptr< sql::Connection > con(mysql_driver->connect(mysqlHost, "iocdb", "$iocdb"));
+		std::auto_ptr< sql::Statement > stmt(con->createStatement());
 		con->setSchema("iocdb");
 	    std::ostringstream sql;
 		sql << "UPDATE iocrt SET pid=NULL, start_time=start_time, stop_time=NOW(), running=0 WHERE iocname='" << ioc_name << "'";
 		stmt->execute(sql.str());
 	}
 	// not sure of state of EPICS errlog during exit handlers, so use plain old stderr for safety
-	catch (SQLException &e) 
+	catch (sql::SQLException &e) 
 	{
 		fprintf(stderr, "pvdump: MySQL ERR: %s (MySQL error code: %d, SQLState: %s)\n", e.what(), e.getErrorCode(), e.getSQLStateCStr());
         return;
@@ -487,12 +497,12 @@ static int sqlexec(const char *fileName)
         const clock_t begin_time = clock();
         if (mysql_driver == NULL)
         {
-	        mysql_driver = SqlDriver::get_driver_instance();
+	        mysql_driver = sql::mysql::get_driver_instance();
         }
-	    std::auto_ptr< SqlConnection > con(mysql_driver->connect(mysqlHost, "iocdb", "$iocdb"));
+	    std::auto_ptr< sql::Connection > con(mysql_driver->connect(mysqlHost, "iocdb", "$iocdb"));
 	    con->setAutoCommit(0); // we will create transactions ourselves via explicit calls to con->commit()
 	    con->setSchema("iocdb");
-	    std::auto_ptr< SqlStatement > stmt(con->createStatement());
+	    std::auto_ptr< sql::Statement > stmt(con->createStatement());
 		std::fstream fs;
 		char buffer[256];
 		fs.open(fileName, std::ios::in);
@@ -506,7 +516,7 @@ static int sqlexec(const char *fileName)
         con->commit();
         std::cout << "sqlexec: executing " << nlines << " lines of SQL from \"" << fileName << "\" took " << float( clock () - begin_time ) /  CLOCKS_PER_SEC << " seconds" << std::endl;
     }
-	catch (SQLException &e) 
+	catch (sql::SQLException &e) 
 	{
         errlogSevPrintf(errlogMinor, "sqlexec: MySQL ERR: %s (MySQL error code: %d, SQLState: %s)\n", e.what(), e.getErrorCode(), e.getSQLStateCStr());
         return -1;
